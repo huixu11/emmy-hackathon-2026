@@ -88,18 +88,19 @@ def _exp(b: PtxBuilder, dst: str, x: str) -> None:
     # exp(x) = 2^t with t = x*log2(e). Split t = hi + lo exactly enough: hi = round(x*L), and
     # lo collects the product's rounding error (fma) plus x times the error of L itself.
     # Then exp(x) = 2^hi * 2^lo ~= 2^hi * (1 + lo*ln2), with 2^hi from ex2.approx.
-    hi, neg_hi, lo, p2, corr = (b.reg("f32") for _ in range(5))
-    normal = b.reg("pred")
-    b.emit("mul.rn.f32", hi, x, f32_imm(_LOG2E))
+    # x is first clamped to [-104, 89] (NaN passes): past those the result is 0 or inf anyway,
+    # and the split stays finite, so the correction needs no special cases. Results below
+    # 2^-126 flush to zero (.ftz), which spares the subnormal handling around ex2.
+    xc, hi, neg_hi, lo, p2, corr = _regs(b, 6)
+    b.emit("max.NaN.f32", xc, x, f32_imm(-104.0))
+    b.emit("min.NaN.f32", xc, xc, f32_imm(89.0))
+    b.emit("mul.rn.f32", hi, xc, f32_imm(_LOG2E))
     b.emit("neg.f32", neg_hi, hi)
-    b.emit("fma.rn.f32", lo, x, f32_imm(_LOG2E), neg_hi)
-    b.emit("fma.rn.f32", lo, x, f32_imm(_LOG2E_LO), lo)
-    b.emit("ex2.approx.f32", p2, hi)
+    b.emit("fma.rn.f32", lo, xc, f32_imm(_LOG2E), neg_hi)
+    b.emit("fma.rn.f32", lo, xc, f32_imm(_LOG2E_LO), lo)
+    b.emit("ex2.approx.ftz.f32", p2, hi)
     b.emit("mul.rn.f32", corr, lo, f32_imm(_LN2))
-    # 0, subnormal, inf and NaN results need (and, for inf/NaN inputs, survive) no correction.
-    b.emit("testp.normal.f32", normal, p2)
-    b.emit("fma.rn.f32", dst, p2, corr, p2, guard=normal)
-    b.emit("mov.f32", dst, p2, guard="!" + normal)
+    b.emit("fma.rn.f32", dst, p2, corr, p2)
 
 
 def _exp_fast(b: PtxBuilder, dst: str, x: str) -> None:
@@ -358,7 +359,10 @@ _COMPOSITE: dict[str, tuple[Callable[..., None], int]] = {
 
 def emit_elementwise(b: PtxBuilder, op: str, dst: str, args: list[str]) -> None:
     """Emit `dst = op(*args)` for f32 operands (registers or immediates)."""
-    if op in _DIRECT:
+    if op == "multiply" and ONE in args:  # x * 1.0 is exactly x (softmax's `one` Let)
+        _check_arity(op, 2, args)
+        b.emit("mov.f32", dst, args[1] if args[0] == ONE else args[0])
+    elif op in _DIRECT:
         opcode, arity = _DIRECT[op]
         _check_arity(op, arity, args)
         b.emit(opcode, dst, *args)

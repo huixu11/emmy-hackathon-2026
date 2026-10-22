@@ -91,6 +91,7 @@ class KernelLowering:
             [_param_symbol(name) for name in self.kernel.params],
             shared_decls,
             self.b,
+            max_threads=self.kernel.block,
         )
 
     def _plan_shared(self) -> list[str]:

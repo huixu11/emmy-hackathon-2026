@@ -107,14 +107,20 @@ class PtxBuilder:
                 for cls, n in self._reg_counts.items()]
 
 
-def render_module(entry: str, params: list[str], shared: list[str], body: PtxBuilder) -> str:
-    """Assemble one .entry and its module-scope shared arrays into a complete PTX file."""
+def render_module(entry: str, params: list[str], shared: list[str], body: PtxBuilder,
+                  max_threads: int | None = None) -> str:
+    """Assemble one .entry and its module-scope shared arrays into a complete PTX file.
+    `max_threads`, the launch's block size when known, becomes .maxntid (what CUDA's
+    __launch_bounds__ says), so ptxas can budget registers for exactly that block."""
     lines = [f".version {PTX_VERSION}", f".target {PTX_TARGET}", ".address_size 64", ""]
     if shared:
         lines += shared + [""]
     lines.append(f".visible .entry {entry}(")
     lines.append(",\n".join(f"\t.param .u64 {p}" for p in params))
-    lines += [")", "{"]
+    lines.append(")")
+    if max_threads is not None:
+        lines.append(f".maxntid {max_threads}, 1, 1")
+    lines.append("{")
     lines += body.reg_declarations()
     lines.append("")
     lines += [item.render() if isinstance(item, Instr) else item for item in body.flat()]
