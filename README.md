@@ -1,3 +1,15 @@
+> **This submission: `ptxc`, a Kernel IR -> PTX compiler.**
+>
+> ```bash
+> pip install emmy-ml==0.3.11 numpy requests
+> python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json > out.ptx
+> python tools/run_problems.py                        # all 15 open problems: 15/15 pass
+> python tools/run_problems.py --dir tests/problems   # 52 extra variants: 52/52 pass
+> ```
+>
+> The compiler is `compile.py` plus the `ptxc/` package. [DESIGN.md](DESIGN.md) explains how
+> each IR statement becomes PTX, and why. The task description from the organizers follows.
+
 # Emmy Hackathon — write a PTX compiler for Kernel IR
 
 Emmy (github.com/cloudrift-ai/emmy) compiles PyTorch to CUDA C++ and builds it with `nvcc`.
