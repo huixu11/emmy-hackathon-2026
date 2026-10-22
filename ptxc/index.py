@@ -32,7 +32,10 @@ class Lin:
 
 ZERO = Lin(None, 0)
 
-_ARITH = {"+", "-", "*", "/", "%"}
+_ARITH = {"+", "-", "*", "/", "//", "%"}  # emmy writes floor division both ways; operands are >= 0
+_BITWISE = {"&": "and.b32", "|": "or.b32", "^": "xor.b32", "<<": "shl.b32", ">>": "shr.s32"}
+_FOLD_BITWISE = {"&": int.__and__, "|": int.__or__, "^": int.__xor__,
+                 "<<": int.__lshift__, ">>": int.__rshift__}
 _COMPARE = {"<": "lt", "<=": "le", ">": "gt", ">=": "ge", "==": "eq", "!=": "ne"}
 _MIRROR = {"lt": "gt", "le": "ge", "gt": "lt", "ge": "le", "eq": "eq", "ne": "ne"}
 _LOGIC = {"&&": "and.pred", "||": "or.pred"}
@@ -71,6 +74,8 @@ class IndexCompiler:
             return v
         if isinstance(e, BinaryExpr) and e.op in _ARITH:
             return self.arith(e.op, self.value(e.left), self.value(e.right))
+        if isinstance(e, BinaryExpr) and e.op in _BITWISE:
+            return self.bitwise(e.op, self.value(e.left), self.value(e.right))
         if isinstance(e, TernaryExpr):
             p = self.pred(e.cond)
             if isinstance(p, bool):
@@ -90,9 +95,16 @@ class IndexCompiler:
             q = _c_div(a.const, b.const)
             return Lin(None, q if op == "/" else a.const - q * b.const)
         if b == Lin(None, 1):
-            return a if op == "/" else ZERO
-        opcode = "div.s32" if op == "/" else "rem.s32"
+            return ZERO if op == "%" else a
+        opcode = "rem.s32" if op == "%" else "div.s32"
         return Lin(self.derive("b32", opcode, self.reg(a), self.operand(b)))
+
+    def bitwise(self, op: str, a: Lin, b: Lin) -> Lin:
+        if a.reg is None and b.reg is None:
+            return Lin(None, _FOLD_BITWISE[op](a.const, b.const))
+        if a.reg is None and op in "&|^":  # commutative: put the register first
+            a, b = b, a
+        return Lin(self.derive("b32", _BITWISE[op], self.reg(a), self.operand(b)))
 
     def add(self, a: Lin, b: Lin) -> Lin:
         if a.reg is None or b.reg is None:
