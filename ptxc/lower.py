@@ -67,6 +67,7 @@ class KernelLowering:
         # Whether a loop may be unrolled without the IR asking; False inside a loop whose body
         # would grow past _ENCLOSING_UNROLL_BUDGET that way.
         self._unroll_room = True
+        self._in_loop = False  # inside the body of a loop emitted as a real loop
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -288,10 +289,12 @@ class KernelLowering:
             if n == 1 or (not has_loop and wanted and n * size <= budget):
                 self._unrolled(var, start, step.const, n, body)
                 return
-            # A constant start leaves ptxas a constant trip count, which it unrolls best itself,
-            # except that it does not merge shared loads across trips: unroll those here, so
-            # that vectorize.py turns a column walk into .v4 loads.
-            ours = start.reg is not None or self._reads_shared(body)
+            # A constant start leaves ptxas a constant trip count. Inside another loop it does
+            # best itself (unrolling the inner loop and hoisting its invariant loads out of the
+            # outer one); elsewhere it may leave a long loop rolled, and it never merges shared
+            # loads across trips. So those are unrolled here, as NVVM does, and vectorize.py
+            # turns a column walk into .v4 loads.
+            ours = start.reg is not None or self._reads_shared(body) or not self._in_loop
             factor = 1 if has_loop or not ours else next(
                 (f for f in (8, 4, 2) if n % f == 0 and f * size <= _PARTIAL_UNROLL_BUDGET), 1)
             self._counted_loop(var, start, end, step, body, factor, uniform=True)
@@ -341,11 +344,13 @@ class KernelLowering:
     def _counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
         """A real loop, `factor` trips per iteration; then, unless every thread's trip count is
         a multiple of the factor, a loop of single trips for the rest. Tested at the bottom."""
-        room, self._unroll_room = self._unroll_room, _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET
+        saved = self._unroll_room, self._in_loop
+        self._unroll_room = _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET
+        self._in_loop = True
         try:
             self._emit_counted_loop(var, start, end, step, body, factor, uniform)
         finally:
-            self._unroll_room = room
+            self._unroll_room, self._in_loop = saved
 
     def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
         counter = self.b.reg("b32")
