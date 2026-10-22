@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections import Counter
 from collections.abc import Iterator
 
 from emmy.compiler.ir.expr import Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
-from emmy.compiler.ir.stmt.blocks import Cond
-from emmy.compiler.ir.stmt.leaves import Accum
+from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
+from emmy.compiler.ir.stmt.leaves import Accum, Assign
 
 from .errors import CompileError
 from .fmath import emit_elementwise
@@ -27,6 +28,7 @@ _F32_BYTES = 4
 _SMEM_DTYPES = {"float": "f32"}
 _STATIC_SMEM_LIMIT = 48 * 1024  # larger shared memory must be the launch's dynamic allocation
 _SMEM_POOL = "sh_pool"
+_UNROLL_BUDGET = 1024  # statements an unrolled loop may expand to
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,6 +54,9 @@ class KernelLowering:
         self.shared: dict[str, SharedArray] = {}
         self.globals: dict[str, str] = {}  # buffer name -> register with its global address
         self.exit_label: str | None = None
+        # How often each name appears anywhere in the kernel, definitions included.
+        self._name_counts = Counter(leaf for node in _walk(kernel.body)
+                                    for leaf in _string_leaves(node))
 
     def run(self) -> str:
         """The complete PTX module for the kernel."""
@@ -106,13 +111,39 @@ class KernelLowering:
         return [f".extern .shared .align {pool_align} .b8 {_SMEM_POOL}[];  // {end} bytes, dynamic"]
 
     def _stmts(self, body, *, annotate: bool = True) -> None:
-        for stmt in body:
+        stmts = list(body)
+        i = 0
+        while i < len(stmts):
+            stmt, after = stmts[i], stmts[i + 1] if i + 1 < len(stmts) else None
             if annotate:
                 self.b.comment(stmt.pretty()[0].strip())
+            if self._is_fma_pair(stmt, after):
+                if annotate:
+                    self.b.comment(after.pretty()[0].strip())
+                self._fma(stmt, after)
+                i += 2
+                continue
             visit = getattr(self, f"visit_{type(stmt).__name__}", None)
             if visit is None:
                 raise CompileError(f"unsupported IR statement {type(stmt).__name__}")
             visit(stmt)
+            i += 1
+
+    def _is_fma_pair(self, stmt, after) -> bool:
+        """`p = multiply(a, b)` directly followed by `acc <- add(acc, p)`, with p used nowhere else:
+        one fma (a single rounding, as nvcc contracts the reference's `acc += a * b`)."""
+        return (isinstance(stmt, Assign) and stmt.op.name == "multiply"
+                and isinstance(after, Accum) and after.op.name == "add"
+                and after.base is None and after.value == stmt.name
+                and self._name_counts[stmt.name] == 2)  # its definition and this one use
+
+    def _fma(self, product, acc) -> None:
+        _require_f32(product.dtype, product.name)
+        dst = self.scopes.find(acc.name)
+        if dst is None:
+            raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
+        a, c = (self._operand(name) for name in product.args)
+        self.b.emit("fma.rn.f32", dst, a, c, dst)
 
     # ---- launch geometry -------------------------------------------------------------------
 
@@ -194,18 +225,20 @@ class KernelLowering:
         else:
             end = Lin(None, loop.axis.extent.as_static())
         self._loop(loop.axis.name, self.idx.value(loop.start), end, self.idx.value(loop.step),
-                   loop.body, loop.seed)
+                   loop.body, loop.seed, loop.unroll)
 
     def visit_Loop(self, loop) -> None:
         self._loop(loop.axis.name, ZERO, Lin(None, loop.axis.extent.as_static()), Lin(None, 1),
-                   loop.body, loop.seed)
+                   loop.body, loop.seed, loop.unroll)
 
-    def _loop(self, var: str, start: Lin, end: Lin, step: Lin, body, seed: bool) -> None:
+    def _loop(self, var: str, start: Lin, end: Lin, step: Lin, body, seed: bool, unroll: bool) -> None:
         """for (var = start; var < end; var += step): tested at the bottom, one branch per trip."""
         if seed:
             self._seed_accumulators(body)
         enter = self.idx.compare("lt", start, end)
         if enter is False:
+            return
+        if unroll and self._unroll(var, start, end, step, body):
             return
         end_op, step_op = self.idx.operand(end), self.idx.operand(step)  # computed once, outside
         counter = self.b.reg("b32")
@@ -222,6 +255,24 @@ class KernelLowering:
         self.b.emit("setp.lt.s32", again, counter, end_op)
         self.b.emit("bra", head, guard=again)
         self.b.place(done)
+
+    def _unroll(self, var: str, start: Lin, end: Lin, step: Lin, body) -> bool:
+        """Emit a loop the IR marks `unroll` once per trip, its counter a constant in each copy,
+        so index arithmetic folds into address immediates. Only for constant bounds, a body
+        without nested loops, and a bounded amount of code; returns whether it did."""
+        if any(v.reg is not None for v in (start, end, step)) or step.const <= 0:
+            return False
+        trips = range(start.const, end.const, step.const)
+        if any(isinstance(node, (Loop, StridedLoop)) for node in _walk(body)):
+            return False
+        if len(trips) * sum(1 for _ in _straight_line(body)) > _UNROLL_BUDGET:
+            return False
+        for value in trips:
+            self.b.comment(f"{var} = {value}")
+            with self.scopes.nested():
+                self.scopes.define(var, Lin(None, value))
+                self._stmts(body, annotate=value == start.const)
+        return True
 
     def _seed_accumulators(self, body) -> None:
         """A seeding loop starts each accumulator it folds at the fold's identity (0 for add,
@@ -521,6 +572,16 @@ def _walk(node) -> Iterator:
             stack.extend(reversed([getattr(item, f.name) for f in dataclasses.fields(item)]))
         elif isinstance(item, (tuple, list)):
             stack.extend(reversed(item))
+
+
+def _string_leaves(node) -> Iterator[str]:
+    """The string fields of one IR node, looking inside tuples (names, args, values)."""
+    for f in dataclasses.fields(node):
+        value = getattr(node, f.name)
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, tuple):
+            yield from (v for v in value if isinstance(v, str))
 
 
 def _names_used(node) -> set[str]:
