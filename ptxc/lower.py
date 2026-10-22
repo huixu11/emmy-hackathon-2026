@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from emmy.compiler.ir.expr import Literal, Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
-from emmy.compiler.ir.stmt.leaves import Accum, Assign
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load
 
 from .errors import CompileError
 from .facts import Fact
@@ -287,8 +287,11 @@ class KernelLowering:
             if n == 1 or (not has_loop and wanted and n * size <= budget):
                 self._unrolled(var, start, step.const, n, body)
                 return
-            # A constant start leaves ptxas a constant trip count, which it unrolls best itself.
-            factor = 1 if has_loop or start.reg is None else next(
+            # A constant start leaves ptxas a constant trip count, which it unrolls best itself,
+            # except that it does not merge shared loads across trips: unroll those here, so
+            # that vectorize.py turns a column walk into .v4 loads.
+            ours = start.reg is not None or self._reads_shared(body)
+            factor = 1 if has_loop or not ours else next(
                 (f for f in (8, 4, 2) if n % f == 0 and f * size <= _PARTIAL_UNROLL_BUDGET), 1)
             self._counted_loop(var, start, end, step, body, factor, uniform=True)
         elif trips is not None and trips[1] == 1:
@@ -297,6 +300,9 @@ class KernelLowering:
             constant = end.reg is None and step.reg is None
             factor = 4 if constant and not has_loop and 4 * size <= _PARTIAL_UNROLL_BUDGET else 1
             self._counted_loop(var, start, end, step, body, factor, uniform=False)
+
+    def _reads_shared(self, body) -> bool:
+        return any(isinstance(node, Load) and node.input in self.shared for node in _walk(body))
 
     def _trip_range(self, start: Lin, end: Lin, step: Lin) -> tuple[int, int] | None:
         """(fewest, most) trips any thread makes, when the bounds and start's range tell."""
@@ -343,6 +349,16 @@ class KernelLowering:
     def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
         counter = self.b.reg("b32")
         self.b.emit("mov.s32", counter, self.idx.operand(start))
+        if step.reg is None and step.const > 0:
+            # The counter steps from start by step (by factor * step when only the unrolled
+            # loop runs), so in the body it is a multiple of what both are multiples of: what
+            # proves m01-style column walks aligned for vector loads.
+            first = self.idx.fact(start)
+            stride = step.const * factor if uniform else step.const
+            top = None
+            if end.reg is None:  # in the body, counter < the bound of the loop that runs it
+                top = (end.const - (factor - 1) * step.const if uniform else end.const) - 1
+            self.idx.assume(counter, Fact(first.lo, top, math.gcd(first.div, stride)))
         if factor > 1:
             last_start = end.const - (factor - 1) * step.const  # the iteration's last trip fits
             self._loop_iterations(var, counter, last_start, step.const, factor, body, test_entry=not uniform)
@@ -361,8 +377,10 @@ class KernelLowering:
             self.b.emit("setp.ge.s32", skip, counter, bound)
             self.b.emit("bra", done, guard=skip)
         self.b.place(head)
-        for k in range(factor):  # factor > 1 only with a constant step
-            self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0, hoist=preheader)
+        with self.scopes.nested(hoist=preheader):  # one iteration: what depends on the counter
+            self.idx.depth[counter] = self.scopes.current.depth
+            for k in range(factor):  # factor > 1 only with a constant step
+                self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0)
         again = self.b.reg("pred")
         self.b.emit("add.s32", counter, counter, step * factor if factor > 1 else step)
         self.b.emit("setp.lt.s32", again, counter, bound)
