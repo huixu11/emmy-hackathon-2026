@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python tools/run_problems.py *)"
+    ]
+  }
+}

@@ -1,0 +1,76 @@
+{
+ "id": "w_m_linear",
+ "code": "x = torch.randn(32, 256); w = torch.randn(256, 512); b = torch.randn(512); x @ w + b",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "x",
+  "w",
+  "b"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_matmul_ec31cc",
+   "arg_order": [
+    "b",
+    "x",
+    "w",
+    "add"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "b",
+     "dtype": "f32",
+     "shape": [
+      512
+     ],
+     "seed": 2
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      32,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f32",
+     "shape": [
+      256,
+      512
+     ],
+     "seed": 1
+    },
+    {
+     "name": "add",
+     "dtype": "f32",
+     "shape": [
+      32,
+      512
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}
