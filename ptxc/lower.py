@@ -238,11 +238,11 @@ class KernelLowering:
         return [coords[i] for i in range(len(extents))]
 
     def _udiv(self, v: Lin, k: int) -> Lin:
-        """v / k for a non-negative v (unsigned, so a power-of-two k is a plain shift)."""
-        return v if k == 1 else Lin(self.idx.derive("b32", "div.u32", self.idx.reg(v), k))
+        """v / k for a non-negative v (its facts let IndexCompiler avoid a divide)."""
+        return self.idx.arith("/", v, Lin(None, k))
 
     def _urem(self, v: Lin, k: int) -> Lin:
-        return ZERO if k == 1 else Lin(self.idx.derive("b32", "rem.u32", self.idx.reg(v), k))
+        return self.idx.arith("%", v, Lin(None, k))
 
     def _exit(self) -> str:
         if self.exit_label is None:

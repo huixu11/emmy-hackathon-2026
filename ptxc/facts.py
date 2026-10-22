@@ -92,6 +92,10 @@ def infer(opcode: str, srcs: tuple, fact_of: Callable[[object], Fact]) -> Fact:
         return _sum(f[0], f[1])
     if op == "neg":
         return Fact(None if f[0].hi is None else -f[0].hi, None if f[0].lo is None else -f[0].lo, f[0].div)
+    if opcode.startswith("mul.hi"):  # the high word of a product: (a * k) >> 32
+        if f[0].nonneg and f[0].hi is not None and k is not None and k >= 0:
+            return Fact((f[0].lo * k) >> 32, (f[0].hi * k) >> 32, 1)
+        return UNKNOWN
     if op == "mul":  # mul.lo.s32 and mul.wide.s32
         return _product(f[0], f[1])
     if op == "mad":

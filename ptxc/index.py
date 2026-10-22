@@ -14,6 +14,7 @@ what is known about its result (facts.py): a range and a divisor.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, TernaryExpr, Var
@@ -148,8 +149,36 @@ class IndexCompiler:
             return Lin(None, q if op == "/" else a.const - q * b.const)
         if b == Lin(None, 1):
             return ZERO if op == "%" else a
+        if b.reg is None and b.const > 0 and self.fact(a).nonneg:
+            return self._by_constant(op, a, b.const)
         opcode = "rem.s32" if op == "%" else "div.s32"
         return Lin(self.derive("b32", opcode, self.reg(a), self.operand(b)))
+
+    def _by_constant(self, op: str, a: Lin, k: int) -> Lin:
+        """a / k or a % k for a constant k > 0 and a >= 0, without a divide: ptxas turns
+        div/rem even by a power of two into a reciprocal-based division sequence. A power of
+        two is a shift or a mask; any other k a multiply-high by a magic reciprocal
+        (Granlund & Montgomery): with l = ceil(log2 k) and m = ceil(2^(31+l) / k),
+        a / k = mulhi(a, m) >> (l - 1) exactly for every 0 <= a < 2^31."""
+        x = self.reg(a)
+        fact = self.fact(a)
+        if k & (k - 1) == 0:
+            if op == "%":
+                r = self.derive("b32", "and.b32", x, k - 1)
+            else:
+                r = self.derive("b32", "shr.u32", x, k.bit_length() - 1)
+        else:
+            l = (k - 1).bit_length()
+            q = self.derive("b32", "mul.hi.u32", x, -(-(1 << (31 + l)) // k))
+            if l > 1:
+                q = self.derive("b32", "shr.u32", q, l - 1)
+            if op != "%":
+                self.assume(q, Fact(fact.lo // k, None if fact.hi is None else fact.hi // k))
+                return Lin(q)
+            r = self.derive("b32", "mad.lo.s32", q, -k, x)  # a - (a / k) * k
+        if op == "%":
+            self.assume(r, Fact(0, k - 1 if fact.hi is None else min(fact.hi, k - 1), math.gcd(fact.div, k)))
+        return Lin(r)
 
     def bitwise(self, op: str, a: Lin, b: Lin) -> Lin:
         if a.reg is None and b.reg is None:
