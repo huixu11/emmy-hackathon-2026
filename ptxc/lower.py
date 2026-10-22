@@ -313,7 +313,10 @@ class KernelLowering:
         self.b.emit("mov.f32", self._register(init.name), f32_imm(float(init.identity)))
 
     def visit_Assign(self, assign) -> None:
-        _require_f32(assign.dtype, assign.name)
+        # A bool (a comparison feeding `where`) lives in an f32 register as 1.0 / 0.0, the
+        # representation the comparison and logic ops produce and `where` tests.
+        if getattr(assign.dtype, "name", assign.dtype) != "bool":
+            _require_f32(assign.dtype, assign.name)
         args = [self._operand(name) for name in assign.args]
         emit_elementwise(self.b, assign.op.name, self._register(assign.name), args)
 
