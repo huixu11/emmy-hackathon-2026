@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import struct
 from collections import Counter
+from dataclasses import dataclass
 
 PTX_VERSION = "8.0"
 PTX_TARGET = "sm_89"
@@ -40,13 +41,45 @@ def vector(regs: list[str]) -> str:
     return regs[0] if len(regs) == 1 else "{" + ", ".join(regs) + "}"
 
 
-class PtxBuilder:
-    """The instruction stream of one kernel, plus the register and label counters behind it."""
+@dataclass
+class Instr:
+    """One instruction, kept structured so that passes over the stream can rewrite it."""
+
+    opcode: str
+    operands: list[str]
+    guard: str | None = None
+
+    def render(self) -> str:
+        pred = f"@{self.guard} " if self.guard else ""
+        args = ", ".join(self.operands)
+        return f"\t{pred}{self.opcode}\t{args};" if args else f"\t{pred}{self.opcode};"
+
+
+class Mark:
+    """A place in the stream that can still take instructions after later code is emitted:
+    where a loop's preheader or a branch's entry is, for values hoisted out of the body."""
 
     def __init__(self) -> None:
-        self.lines: list[str] = []
+        self.lines: list[Instr] = []
+
+
+class PtxBuilder:
+    """The instruction stream of one kernel, plus the register and label counters behind it.
+    `lines` holds Instr records, Marks and, as plain strings, labels and comments."""
+
+    def __init__(self) -> None:
+        self.lines: list[Instr | Mark | str] = []
         self._reg_counts: Counter[str] = Counter()
         self._label_count = 0
+
+    def mark(self) -> Mark:
+        mark = Mark()
+        self.lines.append(mark)
+        return mark
+
+    def flat(self) -> list[Instr | str]:
+        """The stream with every Mark replaced by the instructions placed at it."""
+        return [line for item in self.lines for line in (item.lines if isinstance(item, Mark) else [item])]
 
     def reg(self, cls: str) -> str:
         n = self._reg_counts[cls]
@@ -58,10 +91,9 @@ class PtxBuilder:
         self._label_count += 1
         return [f"$L{self._label_count}_{hint}" for hint in hints]
 
-    def emit(self, opcode: str, *operands, guard: str | None = None) -> None:
-        pred = f"@{guard} " if guard else ""
-        args = ", ".join(str(o) for o in operands)
-        self.lines.append(f"\t{pred}{opcode}\t{args};" if args else f"\t{pred}{opcode};")
+    def emit(self, opcode: str, *operands, guard: str | None = None, at: Mark | None = None) -> None:
+        """Append an instruction, or place it at an earlier Mark."""
+        (at.lines if at else self.lines).append(Instr(opcode, [str(o) for o in operands], guard))
 
     def place(self, label: str) -> None:
         self.lines.append(f"{label}:")
@@ -85,6 +117,6 @@ def render_module(entry: str, params: list[str], shared: list[str], body: PtxBui
     lines += [")", "{"]
     lines += body.reg_declarations()
     lines.append("")
-    lines += body.lines
+    lines += [item.render() if isinstance(item, Instr) else item for item in body.flat()]
     lines.append("}")
     return "\n".join(lines) + "\n"

@@ -4,10 +4,12 @@
     python tools/run_problems.py                                 # every problem
     python tools/run_problems.py p00_scalar_add r01_array_sum    # just these
     python tools/run_problems.py --dir tests/problems            # every problem in a folder
+    python tools/run_problems.py --iters 100                     # median time of 100 launches
     python tools/run_problems.py --via-proxy                     # see below
 
 Prints one line per problem, the full submit.py output for failures, and exits 0 only if all
-pass. The compiler is this repo's compile.py unless --compiler names another.
+pass. The compiler is this repo's compile.py unless --compiler names another. submit.py times
+a single cold launch; --iters N reports the median of N launches after a warmup instead.
 
 --via-proxy sends the runner requests through a CONNECT tunnel of the proxy in $HTTPS_PROXY,
 for sandboxes whose proxy refuses plain-HTTP requests (the runner speaks plain HTTP).
@@ -46,6 +48,15 @@ def tunneled_post(server: str, path: str, body: dict) -> dict:
     return json.loads(data)
 
 
+def timed(post, iters: int):
+    """Wrap a runner post so that each /run times `iters` launches after a warmup."""
+    def post_timed(server: str, path: str, body: dict) -> dict:
+        if path == "/run":
+            body = {**body, "warmup": min(iters, 20), "iters": iters}
+        return post(server, path, body)
+    return post_timed
+
+
 def check(problem: str, compiler: str) -> tuple[bool, list[str]]:
     """Run submit.py's main() for one problem; (passed, its output lines)."""
     out = io.StringIO()
@@ -68,11 +79,14 @@ def main() -> int:
     ap.add_argument("problems", nargs="*", help="problem ids or folders (default: all of --dir)")
     ap.add_argument("--dir", type=Path, default=submit.PROBLEMS, help="folder of problems (default: problems/)")
     ap.add_argument("--compiler", default=str(REPO / "compile.py"))
+    ap.add_argument("--iters", type=int, default=1, help="launches to time per problem (runner max 200)")
     ap.add_argument("--via-proxy", action="store_true", help="tunnel runner requests through $HTTPS_PROXY")
     args = ap.parse_args()
 
     if args.via_proxy:
         submit.post = tunneled_post
+    if args.iters > 1:
+        submit.post = timed(submit.post, args.iters)
     problems = args.problems or sorted(str(p) for p in args.dir.iterdir() if (p / "meta.json").exists())
 
     failed = 0

@@ -8,7 +8,8 @@ offset: `[%rd5+4]`, `[%rd5+8]`.
 
 Integer arithmetic is 32-bit signed, the `int` of the reference CUDA (buffers hold at most
 2^26 elements, so byte offsets fit). Every instruction emitted here is pure and goes through
-`derive`, which reuses the register of an identical earlier computation in scope.
+`derive`, which reuses the register of an identical earlier computation in scope and records
+what is known about its result (facts.py): a range and a divisor.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, TernaryExpr, Var
 
 from .errors import CompileError
+from .facts import UNKNOWN, Fact, infer
 from .ptx import PtxBuilder, address
 from .scope import Scopes
 
@@ -41,6 +43,26 @@ _MIRROR = {"lt": "gt", "le": "ge", "gt": "lt", "ge": "le", "eq": "eq", "ne": "ne
 _LOGIC = {"&&": "and.pred", "||": "or.pred"}
 
 
+def _decide(cmp: str, a: Fact, b: Fact) -> bool | None:
+    """The comparison's value when the ranges of its sides settle it, else None."""
+    if None in (a.lo, a.hi, b.lo, b.hi):
+        return None
+    lo, hi = a.lo - b.hi, a.hi - b.lo  # the range of a - b
+    if cmp == "lt":
+        return True if hi < 0 else False if lo >= 0 else None
+    if cmp == "le":
+        return True if hi <= 0 else False if lo > 0 else None
+    if cmp == "gt":
+        return True if lo > 0 else False if hi <= 0 else None
+    if cmp == "ge":
+        return True if lo >= 0 else False if hi < 0 else None
+    same = lo == hi == 0
+    apart = hi < 0 or lo > 0
+    if cmp == "eq":
+        return True if same else False if apart else None
+    return False if same else True if apart else None  # ne
+
+
 def _c_div(a: int, b: int) -> int:
     """C integer division: truncates toward zero (Python's // floors)."""
     q = abs(a) // abs(b)
@@ -51,14 +73,44 @@ class IndexCompiler:
     def __init__(self, builder: PtxBuilder, scopes: Scopes) -> None:
         self.b = builder
         self.scopes = scopes
+        self.facts: dict[str, Fact] = {}  # operand (register, %tid.x, shared symbol) -> fact
+        self.depth: dict[str, int] = {}   # derived register -> depth of the scope caching it
 
     def derive(self, cls: str, opcode: str, *srcs) -> str:
-        """The result register of a pure instruction, emitted once per scope."""
-        def emit() -> str:
-            dst = self.b.reg(cls)
-            self.b.emit(opcode, dst, *srcs)
-            return dst
-        return self.scopes.memo((opcode, *srcs), emit)
+        """The result register of a pure instruction, computed once: reused from an enclosing
+        scope's cache, or emitted in the outermost scope its operands allow (scope.py)."""
+        key = (opcode, *srcs)
+        cached = self.scopes.cached(key)
+        if cached is not None:
+            return cached
+        home, at = self.scopes.placement(max((self._depth_of(s) for s in srcs), default=0))
+        dst = self.b.reg(cls)
+        self.b.emit(opcode, dst, *srcs, at=at)
+        self.facts[dst] = infer(opcode, srcs, self._fact_of)
+        self.depth[dst] = home.depth
+        home.values[key] = dst
+        return dst
+
+    def _depth_of(self, src) -> int:
+        """The scope depth an operand is defined at: 0 for constants, special registers and
+        symbols; for a register not made by derive (a loop counter), the current depth."""
+        if isinstance(src, int) or not src.startswith("%") or "." in src:
+            return 0
+        return self.depth.get(src, self.scopes.current.depth)
+
+    # ---- facts -----------------------------------------------------------------------------
+
+    def assume(self, operand: str, fact: Fact) -> None:
+        """Record something the launch or the IR guarantees about an operand."""
+        self.facts[operand] = self.facts.get(operand, UNKNOWN).meet(fact)
+
+    def fact(self, v: Lin) -> Fact:
+        if v.reg is None:
+            return Fact.const(v.const)
+        return self.facts.get(v.reg, UNKNOWN).shifted(v.const)
+
+    def _fact_of(self, src) -> Fact:
+        return Fact.const(src) if isinstance(src, int) else self.facts.get(src, UNKNOWN)
 
     # ---- integer values -------------------------------------------------------------------
 
@@ -158,9 +210,9 @@ class IndexCompiler:
         return self.compare("ne", self.value(e), ZERO)  # C truthiness of an integer
 
     def compare(self, cmp: str, a: Lin, b: Lin) -> bool | str:
-        if a.reg is None and b.reg is None:
-            x, y = a.const, b.const
-            return {"lt": x < y, "le": x <= y, "gt": x > y, "ge": x >= y, "eq": x == y, "ne": x != y}[cmp]
+        known = _decide(cmp, self.fact(a), self.fact(b))
+        if known is not None:
+            return known
         if a.reg is None:
             a, b, cmp = b, a, _MIRROR[cmp]
         if b.reg is None:  # reg + c  <cmp>  k   <=>   reg  <cmp>  k - c

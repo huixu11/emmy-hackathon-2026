@@ -33,8 +33,13 @@ class Kernel:
     body: tuple                    # the KernelOp body: a tuple of IR statements
     params: tuple[str, ...]        # buffer names in .param order
     buffers: dict[str, Buffer]
-    launched_threads: int | None   # grid x block from meta.json, None when there is none
+    grid: int | None               # blocks and threads per block of the 1-D launch in meta.json,
+    block: int | None              # None when there is no meta.json
     dynamic_smem_bytes: int | None  # the launch's dynamic shared memory, None when unknown
+
+    @property
+    def launched_threads(self) -> int | None:
+        return None if self.grid is None else self.grid * self.block
 
 
 def load_kernel(ir_path: Path) -> Kernel:
@@ -59,15 +64,17 @@ def load_kernel(ir_path: Path) -> Kernel:
     launch = _launch(ir_path.parent / "meta.json", op.name)
     if launch is not None:
         params = tuple(launch["arg_order"])
-        threads = math.prod(launch["grid"]) * math.prod(launch["block"])
+        if math.prod(launch["grid"][1:]) * math.prod(launch["block"][1:]) != 1:
+            raise CompileError(f"only 1-D launches are supported, got {launch['grid']} x {launch['block']}")
+        grid, block = launch["grid"][0], launch["block"][0]
         smem = launch.get("smem_bytes", 0)
     else:
         params = tuple(raw_node["inputs"]) + tuple(outputs)
-        threads = smem = None
+        grid = block = smem = None
     unknown = [p for p in params if p not in buffers]
     if unknown:
         raise CompileError(f"parameters {unknown} name no buffer of the graph")
-    return Kernel(op.name, op.body, params, buffers, threads, smem)
+    return Kernel(op.name, op.body, params, buffers, grid, block, smem)
 
 
 def _launch(meta_path: Path, entry: str) -> dict | None:

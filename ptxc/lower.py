@@ -12,23 +12,33 @@ import math
 from collections import Counter
 from collections.abc import Iterator
 
-from emmy.compiler.ir.expr import Var
+from emmy.compiler.ir.expr import Literal, Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign
 
 from .errors import CompileError
+from .facts import Fact
 from .fmath import emit_elementwise
 from .index import ZERO, IndexCompiler, Lin
 from .kernel import Kernel
-from .ptx import PtxBuilder, address, f32_imm, is_register, render_module, vector
+from .ptx import Mark, PtxBuilder, address, f32_imm, is_register, render_module, vector
 from .scope import Scopes
+from .vectorize import vectorize_loads
 
 _F32_BYTES = 4
 _SMEM_DTYPES = {"float": "f32"}
 _STATIC_SMEM_LIMIT = 48 * 1024  # larger shared memory must be the launch's dynamic allocation
 _SMEM_POOL = "sh_pool"
-_UNROLL_BUDGET = 1024  # statements an unrolled loop may expand to
+_GLOBAL_ALIGN = 16  # buffer base alignment; the IR's own v4 accesses rely on at least this
+# Unrolling limits, in IR statements. The enclosing budget was measured on attention kernels:
+# when unrolling the inner loops would grow the loop around them past it (several 64-trip
+# inner products per trip), ptxas does better with them rolled (it unrolls and hoists itself).
+_UNROLL_BUDGET = 1024           # a fully unrolled loop the IR marks unroll
+_IMPLICIT_UNROLL_BUDGET = 512   # a fully unrolled loop the IR does not mark
+_ENCLOSING_UNROLL_BUDGET = 384  # the body of a loop whose inner loops unroll without the IR asking
+_FULL_UNROLL_TRIPS = 64         # most trips unrolled completely without the IR asking
+_PARTIAL_UNROLL_BUDGET = 128    # one iteration of a partially unrolled loop
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,6 +64,9 @@ class KernelLowering:
         self.shared: dict[str, SharedArray] = {}
         self.globals: dict[str, str] = {}  # buffer name -> register with its global address
         self.exit_label: str | None = None
+        # Whether a loop may be unrolled without the IR asking; False inside a loop whose body
+        # would grow past _ENCLOSING_UNROLL_BUDGET that way.
+        self._unroll_room = True
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -65,11 +78,14 @@ class KernelLowering:
             generic, glob = self.b.reg("b64"), self.b.reg("b64")
             self.b.emit("ld.param.u64", generic, f"[{_param_symbol(name)}]")
             self.b.emit("cvta.to.global.u64", glob, generic)
+            self.idx.assume(glob, Fact(div=_GLOBAL_ALIGN))
+            self.idx.depth[glob] = 0  # defined in the prologue, ahead of every scope
             self.globals[name] = glob
         self._stmts(self.kernel.body)
         if self.exit_label:
             self.b.place(self.exit_label)
         self.b.emit("ret")
+        self.b.lines = vectorize_loads(self.b.flat(), self._alignment)
         return render_module(
             self.kernel.entry,
             [_param_symbol(name) for name in self.kernel.params],
@@ -100,15 +116,22 @@ class KernelLowering:
         if end <= _STATIC_SMEM_LIMIT:
             for smem, _, align in layout:
                 self.shared[smem.name] = SharedArray(f"sh_{smem.name}", 0, tuple(smem.extents), align)
+                self.idx.assume(f"sh_{smem.name}", Fact(div=align))
             return [f".shared .align {a.align} .b8 {a.symbol}[{a.nbytes}];" for a in self.shared.values()]
 
         available = self.kernel.dynamic_smem_bytes
         if available is not None and available < end:
             raise CompileError(f"shared arrays need {end} bytes, the launch provides {available}")
         pool_align = max(align for _, _, align in layout)
+        self.idx.assume(_SMEM_POOL, Fact(div=pool_align))
         for smem, offset, align in layout:
             self.shared[smem.name] = SharedArray(_SMEM_POOL, offset, tuple(smem.extents), align)
         return [f".extern .shared .align {pool_align} .b8 {_SMEM_POOL}[];  // {end} bytes, dynamic"]
+
+    def _alignment(self, operand: str) -> int:
+        """The largest power of two an address operand is known to be a multiple of."""
+        div = self.idx.facts.get(operand, Fact()).div
+        return 1 << 30 if div == 0 else div & -div
 
     def _stmts(self, body, *, annotate: bool = True) -> None:
         stmts = list(body)
@@ -153,6 +176,10 @@ class KernelLowering:
             raise CompileError("tiles with a warp-specialized aux band are not supported")
         extents = [axis.extent.as_static() for axis in tile.axes]
         cells = math.prod(extents)
+        if self.kernel.block is not None:
+            self.idx.assume("%tid.x", Fact(0, self.kernel.block - 1))
+            self.idx.assume("%ntid.x", Fact.const(self.kernel.block))
+            self.idx.assume("%ctaid.x", Fact(0, self.kernel.grid - 1))
         derive = self.idx.derive
         tid = derive("b32", "mov.u32", "%tid.x")
         gid = derive("b32", "mad.lo.s32", derive("b32", "mov.u32", "%ctaid.x"),
@@ -161,9 +188,12 @@ class KernelLowering:
         if launched is None or launched > cells:
             # The guard is not in the IR: the launch may carry more threads than cells.
             self.b.emit("bra", self._exit(), guard=derive("pred", "setp.ge.s32", gid, cells))
+        self.idx.assume(gid, Fact(0, cells - 1))  # past the guard, or no thread beyond the cells
 
         with self.scopes.nested():
-            for axis, coord in zip(tile.axes, self._decode_cell(tile, extents, gid)):
+            for axis, extent, coord in zip(tile.axes, extents, self._decode_cell(tile, extents, gid)):
+                if coord.reg is not None and coord.const == 0:
+                    self.idx.assume(coord.reg, Fact(0, extent - 1))
                 self.scopes.define(axis.name, coord)
             used = _names_used(tile.body)
             if "lane" in used:
@@ -232,47 +262,112 @@ class KernelLowering:
                    loop.body, loop.seed, loop.unroll)
 
     def _loop(self, var: str, start: Lin, end: Lin, step: Lin, body, seed: bool, unroll: bool) -> None:
-        """for (var = start; var < end; var += step): tested at the bottom, one branch per trip."""
+        """for (var = start; var < end; var += step).
+
+        The trip count decides the shape (start is often a thread coordinate whose range is
+        known, so every thread's count is). The same count on every thread, and few enough:
+        emit the body once per trip with no loop at all. The same count but many: a loop
+        that runs a few trips per iteration, the factor dividing the count. At most one
+        trip: a branch. Otherwise: 4 trips per iteration while they fit, then single trips.
+        Copies of the body bind `var` to counter + k*step, so their index arithmetic differs
+        only in address immediates, and their loads can all be in flight together. The trips
+        still run in order, so every accumulator folds exactly as the IR says.
+        """
         if seed:
             self._seed_accumulators(body)
+        trips = self._trip_range(start, end, step)
+        if trips == (0, 0):
+            return
+        has_loop = any(isinstance(node, (Loop, StridedLoop)) for node in _walk(body))
+        size = sum(1 for _ in _straight_line(body))
+        if trips is not None and trips[0] == trips[1]:
+            n = trips[0]
+            budget = _UNROLL_BUDGET if unroll else _IMPLICIT_UNROLL_BUDGET
+            wanted = unroll or (self._unroll_room and n <= _FULL_UNROLL_TRIPS)
+            if n == 1 or (not has_loop and wanted and n * size <= budget):
+                self._unrolled(var, start, step.const, n, body)
+                return
+            # A constant start leaves ptxas a constant trip count, which it unrolls best itself.
+            factor = 1 if has_loop or start.reg is None else next(
+                (f for f in (8, 4, 2) if n % f == 0 and f * size <= _PARTIAL_UNROLL_BUDGET), 1)
+            self._counted_loop(var, start, end, step, body, factor, uniform=True)
+        elif trips is not None and trips[1] == 1:
+            self._at_most_once(var, start, end, body)
+        else:
+            constant = end.reg is None and step.reg is None
+            factor = 4 if constant and not has_loop and 4 * size <= _PARTIAL_UNROLL_BUDGET else 1
+            self._counted_loop(var, start, end, step, body, factor, uniform=False)
+
+    def _trip_range(self, start: Lin, end: Lin, step: Lin) -> tuple[int, int] | None:
+        """(fewest, most) trips any thread makes, when the bounds and start's range tell."""
+        first = self.idx.fact(start)
+        if end.reg is not None or step.reg is not None or step.const <= 0 or None in (first.lo, first.hi):
+            return None
+        def trips(s: int) -> int:
+            return max(0, -(-(end.const - s) // step.const))
+        return trips(first.hi), trips(first.lo)
+
+    def _copy(self, var: str, value: Lin, body, annotate: bool, hoist: Mark | None = None) -> None:
+        """One copy of a loop body with `var` bound to `value`. Index arithmetic that does not
+        depend on the copy moves to `hoist` (by default, the start of this copy) and is shared
+        with the copies that follow."""
+        with self.scopes.nested(hoist=hoist or self.b.mark()):
+            self.scopes.define(var, value)
+            self._stmts(body, annotate=annotate)
+
+    def _unrolled(self, var: str, start: Lin, step: int, n: int, body) -> None:
+        for k in range(n):
+            self.b.comment(f"{var}: trip {k} of {n}")
+            self._copy(var, Lin(start.reg, start.const + k * step), body, annotate=k == 0)
+
+    def _at_most_once(self, var: str, start: Lin, end: Lin, body) -> None:
         enter = self.idx.compare("lt", start, end)
-        if enter is False:
+        if enter is True:
+            self._copy(var, start, body, annotate=True)
             return
-        if unroll and self._unroll(var, start, end, step, body):
-            return
-        end_op, step_op = self.idx.operand(end), self.idx.operand(step)  # computed once, outside
+        before = self.b.mark()
+        (skip,) = self.b.labels("once_end")
+        self.b.emit("bra", skip, guard="!" + enter)
+        self._copy(var, start, body, annotate=True, hoist=before)
+        self.b.place(skip)
+
+    def _counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
+        """A real loop, `factor` trips per iteration; then, unless every thread's trip count is
+        a multiple of the factor, a loop of single trips for the rest. Tested at the bottom."""
+        room, self._unroll_room = self._unroll_room, _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET
+        try:
+            self._emit_counted_loop(var, start, end, step, body, factor, uniform)
+        finally:
+            self._unroll_room = room
+
+    def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
         counter = self.b.reg("b32")
         self.b.emit("mov.s32", counter, self.idx.operand(start))
+        if factor > 1:
+            last_start = end.const - (factor - 1) * step.const  # the iteration's last trip fits
+            self._loop_iterations(var, counter, last_start, step.const, factor, body, test_entry=not uniform)
+        if factor == 1 or not uniform:
+            enter = self.idx.compare("lt", start, end) if factor == 1 else None
+            self._loop_iterations(var, counter, self.idx.operand(end), self.idx.operand(step), 1, body,
+                                  test_entry=enter is not True)
+
+    def _loop_iterations(self, var: str, counter: str, bound, step, factor: int, body, test_entry: bool) -> None:
+        """while counter < bound: `factor` copies of the body; counter += factor * step.
+        Loop-invariant index arithmetic goes to the preheader, ahead of the entry test."""
+        preheader = self.b.mark()
         head, done = self.b.labels("loop", "loop_end")
-        if enter is not True:
-            self.b.emit("bra", done, guard="!" + enter)
+        if test_entry:
+            skip = self.b.reg("pred")  # not derive(): the counter changes every trip
+            self.b.emit("setp.ge.s32", skip, counter, bound)
+            self.b.emit("bra", done, guard=skip)
         self.b.place(head)
-        with self.scopes.nested():
-            self.scopes.define(var, Lin(counter))
-            self._stmts(body)
-        again = self.b.reg("pred")  # not derive(): the counter changes every trip
-        self.b.emit("add.s32", counter, counter, step_op)
-        self.b.emit("setp.lt.s32", again, counter, end_op)
+        for k in range(factor):  # factor > 1 only with a constant step
+            self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0, hoist=preheader)
+        again = self.b.reg("pred")
+        self.b.emit("add.s32", counter, counter, step * factor if factor > 1 else step)
+        self.b.emit("setp.lt.s32", again, counter, bound)
         self.b.emit("bra", head, guard=again)
         self.b.place(done)
-
-    def _unroll(self, var: str, start: Lin, end: Lin, step: Lin, body) -> bool:
-        """Emit a loop the IR marks `unroll` once per trip, its counter a constant in each copy,
-        so index arithmetic folds into address immediates. Only for constant bounds, a body
-        without nested loops, and a bounded amount of code; returns whether it did."""
-        if any(v.reg is not None for v in (start, end, step)) or step.const <= 0:
-            return False
-        trips = range(start.const, end.const, step.const)
-        if any(isinstance(node, (Loop, StridedLoop)) for node in _walk(body)):
-            return False
-        if len(trips) * sum(1 for _ in _straight_line(body)) > _UNROLL_BUDGET:
-            return False
-        for value in trips:
-            self.b.comment(f"{var} = {value}")
-            with self.scopes.nested():
-                self.scopes.define(var, Lin(None, value))
-                self._stmts(body, annotate=value == start.const)
-        return True
 
     def _seed_accumulators(self, body) -> None:
         """A seeding loop starts each accumulator it folds at the fold's identity (0 for add,
@@ -289,14 +384,15 @@ class KernelLowering:
             with self.scopes.nested():
                 self._stmts(cond.body if p else cond.else_body)
             return
+        before = self.b.mark()  # index arithmetic of either branch can be computed up here
         else_label, end_label = self.b.labels("else", "endif")
         self.b.emit("bra", else_label if cond.else_body else end_label, guard="!" + p)
-        with self.scopes.nested():
+        with self.scopes.nested(hoist=before):
             self._stmts(cond.body)
         if cond.else_body:
             self.b.emit("bra", end_label)
             self.b.place(else_label)
-            with self.scopes.nested():
+            with self.scopes.nested(hoist=before):
                 self._stmts(cond.else_body)
         self.b.place(end_label)
 
@@ -436,9 +532,10 @@ class KernelLowering:
         while stride >= 1:
             self.b.comment(f"tree stride {stride}")
             active = self.idx.compare("lt", tid, Lin(None, stride))
+            before = self.b.mark()
             (skip,) = self.b.labels("tree_skip")
             self.b.emit("bra", skip, guard="!" + active)
-            with self.scopes.nested():
+            with self.scopes.nested(hoist=before):
                 mine = self.idx.shared_address
                 for array, state, partner in zip(arrays, tree.state, tree.state_b):
                     self.b.emit("ld.shared.f32", self._define_new(state),
@@ -563,6 +660,29 @@ def _raster_pair(tile, extents: list[int]) -> tuple[int, int, int] | None:
     if extents[grouped] <= 1 or group <= 1:
         return None
     return grouped, other, group
+
+
+def _constant_trips(loop) -> int | None:
+    extent = loop.axis.extent.as_static()
+    if isinstance(loop, Loop):
+        return extent
+    if loop.end is None and isinstance(loop.start, Literal) and isinstance(loop.step, Literal):
+        return max(0, -(-(extent - int(loop.start.value)) // int(loop.step.value)))
+    return None
+
+
+def _expanded_size(body) -> int:
+    """The statements of a loop body, counting each inner loop with a small constant trip
+    count as unrolled."""
+    total = 0
+    for stmt in _straight_line(body):
+        if isinstance(stmt, (Loop, StridedLoop)):
+            inner = sum(1 for _ in _straight_line(stmt.body))
+            trips = _constant_trips(stmt)
+            total += inner * trips if trips is not None and trips <= _FULL_UNROLL_TRIPS else inner
+        else:
+            total += 1
+    return total
 
 
 def _walk(node) -> Iterator:
