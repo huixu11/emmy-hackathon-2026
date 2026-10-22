@@ -34,6 +34,7 @@ class Kernel:
     params: tuple[str, ...]        # buffer names in .param order
     buffers: dict[str, Buffer]
     launched_threads: int | None   # grid x block from meta.json, None when there is none
+    dynamic_smem_bytes: int | None  # the launch's dynamic shared memory, None when unknown
 
 
 def load_kernel(ir_path: Path) -> Kernel:
@@ -59,13 +60,14 @@ def load_kernel(ir_path: Path) -> Kernel:
     if launch is not None:
         params = tuple(launch["arg_order"])
         threads = math.prod(launch["grid"]) * math.prod(launch["block"])
+        smem = launch.get("smem_bytes", 0)
     else:
         params = tuple(raw_node["inputs"]) + tuple(outputs)
-        threads = None
+        threads = smem = None
     unknown = [p for p in params if p not in buffers]
     if unknown:
         raise CompileError(f"parameters {unknown} name no buffer of the graph")
-    return Kernel(op.name, op.body, params, buffers, threads)
+    return Kernel(op.name, op.body, params, buffers, threads, smem)
 
 
 def _launch(meta_path: Path, entry: str) -> dict | None:

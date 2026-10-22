@@ -89,6 +89,8 @@ class IndexCompiler:
         if a.reg is None and b.reg is None:
             q = _c_div(a.const, b.const)
             return Lin(None, q if op == "/" else a.const - q * b.const)
+        if b == Lin(None, 1):
+            return a if op == "/" else ZERO
         opcode = "div.s32" if op == "/" else "rem.s32"
         return Lin(self.derive("b32", opcode, self.reg(a), self.operand(b)))
 

@@ -12,7 +12,7 @@ import math
 from collections.abc import Iterator
 
 from emmy.compiler.ir.expr import Var
-from emmy.compiler.ir.kernel.ir import TreeHalve
+from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond
 from emmy.compiler.ir.stmt.leaves import Accum
 
@@ -25,17 +25,22 @@ from .scope import Scopes
 
 _F32_BYTES = 4
 _SMEM_DTYPES = {"float": "f32"}
+_STATIC_SMEM_LIMIT = 48 * 1024  # larger shared memory must be the launch's dynamic allocation
+_SMEM_POOL = "sh_pool"
 
 
 @dataclasses.dataclass(frozen=True)
 class SharedArray:
+    """One Smem array: its own static symbol, or a byte offset into the dynamic pool."""
+
     symbol: str
+    offset: int
     extents: tuple[int, ...]
     align: int
 
-    def declaration(self) -> str:
-        nbytes = math.prod(self.extents) * _F32_BYTES
-        return f".shared .align {self.align} .b8 {self.symbol}[{nbytes}];"
+    @property
+    def nbytes(self) -> int:
+        return math.prod(self.extents) * _F32_BYTES
 
 
 class KernelLowering:
@@ -50,6 +55,7 @@ class KernelLowering:
 
     def run(self) -> str:
         """The complete PTX module for the kernel."""
+        shared_decls = self._plan_shared()
         for name in self.kernel.params:
             generic, glob = self.b.reg("b64"), self.b.reg("b64")
             self.b.emit("ld.param.u64", generic, f"[{_param_symbol(name)}]")
@@ -62,9 +68,42 @@ class KernelLowering:
         return render_module(
             self.kernel.entry,
             [_param_symbol(name) for name in self.kernel.params],
-            [array.declaration() for array in self.shared.values()],
+            shared_decls,
             self.b,
         )
+
+    def _plan_shared(self) -> list[str]:
+        """Lay out every Smem array of the kernel up front and return the module declarations.
+
+        Up to 48 KiB, each array is its own static .shared symbol. Beyond that, static shared
+        memory is not allowed: the arrays are packed, in declaration order, into the dynamic
+        pool the launch allocates (meta.json's smem_bytes).
+        """
+        smems: dict[str, object] = {}
+        for node in _walk(self.kernel.body):
+            if isinstance(node, Smem):
+                if _SMEM_DTYPES.get(node.dtype) != "f32":
+                    raise CompileError(f"shared array {node.name!r} of type {node.dtype} is not supported")
+                smems.setdefault(node.name, node)
+        layout, end = [], 0
+        for smem in smems.values():
+            align = max(smem.align, _F32_BYTES)
+            offset = -(-end // align) * align
+            layout.append((smem, offset, align))
+            end = offset + math.prod(smem.extents) * _F32_BYTES
+
+        if end <= _STATIC_SMEM_LIMIT:
+            for smem, _, align in layout:
+                self.shared[smem.name] = SharedArray(f"sh_{smem.name}", 0, tuple(smem.extents), align)
+            return [f".shared .align {a.align} .b8 {a.symbol}[{a.nbytes}];" for a in self.shared.values()]
+
+        available = self.kernel.dynamic_smem_bytes
+        if available is not None and available < end:
+            raise CompileError(f"shared arrays need {end} bytes, the launch provides {available}")
+        pool_align = max(align for _, _, align in layout)
+        for smem, offset, align in layout:
+            self.shared[smem.name] = SharedArray(_SMEM_POOL, offset, tuple(smem.extents), align)
+        return [f".extern .shared .align {pool_align} .b8 {_SMEM_POOL}[];  // {end} bytes, dynamic"]
 
     def _stmts(self, body, *, annotate: bool = True) -> None:
         for stmt in body:
@@ -79,8 +118,8 @@ class KernelLowering:
 
     def visit_Tile(self, tile) -> None:
         """One thread per cell: decode the cell's axis coordinates from the global thread id."""
-        if tile.raster_axes is not None or tile.aux_threads:
-            raise CompileError("rasterized tiles are not supported yet")
+        if tile.aux_threads:
+            raise CompileError("tiles with a warp-specialized aux band are not supported")
         extents = [axis.extent.as_static() for axis in tile.axes]
         cells = math.prod(extents)
         derive = self.idx.derive
@@ -93,19 +132,54 @@ class KernelLowering:
             self.b.emit("bra", self._exit(), guard=derive("pred", "setp.ge.s32", gid, cells))
 
         with self.scopes.nested():
-            stride = cells  # row-major: the last axis varies fastest
-            for i, (axis, extent) in enumerate(zip(tile.axes, extents)):
-                stride //= extent
-                coord = gid if stride == 1 else derive("b32", "div.u32", gid, stride)
-                if i > 0:  # the first axis needs no wrap: gid < cells
-                    coord = derive("b32", "rem.u32", coord, extent)
-                self.scopes.define(axis.name, ZERO if extent == 1 else Lin(coord))
+            for axis, coord in zip(tile.axes, self._decode_cell(tile, extents, gid)):
+                self.scopes.define(axis.name, coord)
             used = _names_used(tile.body)
             if "lane" in used:
                 self.scopes.define("lane", Lin(derive("b32", "and.b32", tid, 31)))
             if "warp" in used:
                 self.scopes.define("warp", Lin(derive("b32", "shr.u32", tid, 5)))
             self._stmts(tile.body)
+
+    def _decode_cell(self, tile, extents: list[int], gid: str) -> list[Lin]:
+        """Every axis coordinate of this thread's cell. The cells are numbered row-major (the
+        last axis fastest), except for a rasterized (m, n) block pair: there consecutive CTAs walk
+        `raster_group` tiles of the grouped axis first, so they reuse operand slabs from L2."""
+        idx = self.idx
+        strides = [math.prod(extents[i + 1:]) for i in range(len(extents))]
+        coords: dict[int, Lin] = {}
+
+        raster = _raster_pair(tile, extents)
+        if raster is not None:
+            grouped, other, group = raster
+            lo, hi = sorted((grouped, other))
+            span = group * extents[other]  # cells of one group of grouped-axis tiles
+            sub = self._udiv(Lin(gid), strides[hi])
+            if lo != 0:
+                sub = self._urem(sub, extents[grouped] * extents[other])
+            within = self._urem(sub, span)
+            first = idx.mul(self._udiv(sub, span), Lin(None, group))
+            if extents[grouped] % group == 0:
+                size = Lin(None, group)
+            else:  # the last group is ragged
+                rest = idx.reg(idx.add(Lin(None, extents[grouped]), idx.neg(first)))
+                size = Lin(idx.derive("b32", "min.s32", rest, group))
+            coords[grouped] = idx.add(first, idx.arith("%", within, size))
+            coords[other] = idx.arith("/", within, size)
+
+        for i, (stride, extent) in enumerate(zip(strides, extents)):
+            if i in coords:
+                continue
+            coord = self._udiv(Lin(gid), stride)
+            coords[i] = coord if i == 0 else self._urem(coord, extent)  # gid < cells: no wrap
+        return [coords[i] for i in range(len(extents))]
+
+    def _udiv(self, v: Lin, k: int) -> Lin:
+        """v / k for a non-negative v (unsigned, so a power-of-two k is a plain shift)."""
+        return v if k == 1 else Lin(self.idx.derive("b32", "div.u32", self.idx.reg(v), k))
+
+    def _urem(self, v: Lin, k: int) -> Lin:
+        return ZERO if k == 1 else Lin(self.idx.derive("b32", "rem.u32", self.idx.reg(v), k))
 
     def _exit(self) -> str:
         if self.exit_label is None:
@@ -245,10 +319,28 @@ class KernelLowering:
     # ---- shared memory, barriers, cross-thread combines ------------------------------------
 
     def visit_Smem(self, smem) -> None:
-        if _SMEM_DTYPES.get(smem.dtype) != "f32":
-            raise CompileError(f"shared array {smem.name!r} of type {smem.dtype} is not supported")
-        array = SharedArray(f"sh_{smem.name}", tuple(smem.extents), max(smem.align, _F32_BYTES))
-        self.shared.setdefault(smem.name, array)
+        pass  # laid out up front by _plan_shared
+
+    def visit_CpAsyncCopy(self, copy) -> None:
+        """One asynchronous global -> shared copy of 4, 8 or 16 bytes (16: .cg, bypassing L1)."""
+        if str(copy.swizzle) != "NONE":
+            raise CompileError(f"swizzled cp.async ({copy.swizzle}) is not supported")
+        if copy.nbytes not in (4, 8, 16):
+            raise CompileError(f"cp.async of {copy.nbytes} bytes")
+        flat = self._flat(copy.smem, copy.smem_index)
+        if copy.lane_index is not None:  # smem_index is a stripe base; add the lane's (row, col)
+            row, col = (self.idx.value(e) for e in copy.lane_index)
+            cols = Lin(None, self.shared[copy.smem].extents[-1])
+            flat = self.idx.add(flat, self.idx.add(self.idx.mul(row, cols), col))
+        _, dst = self._address(copy.smem, flat)
+        _, src = self._address(copy.src, self._flat(copy.src, copy.src_index))
+        self.b.emit(f"cp.async.{'cg' if copy.nbytes == 16 else 'ca'}.shared.global", dst, src, copy.nbytes)
+
+    def visit_CpAsyncCommit(self, _) -> None:
+        self.b.emit("cp.async.commit_group")
+
+    def visit_CpAsyncWait(self, wait) -> None:
+        self.b.emit("cp.async.wait_group", wait.group)
 
     def visit_Sync(self, sync) -> None:
         if sync.warp:
@@ -354,7 +446,9 @@ class KernelLowering:
     def _address(self, buffer: str, flat: Lin) -> tuple[str, str]:
         """(state space, memory operand) of element `flat` of a buffer or shared array."""
         if buffer in self.shared:
-            return "shared", self.idx.shared_address(self.shared[buffer].symbol, flat, _F32_BYTES)
+            array = self.shared[buffer]
+            in_pool = Lin(flat.reg, flat.const + array.offset // _F32_BYTES)
+            return "shared", self.idx.shared_address(array.symbol, in_pool, _F32_BYTES)
         if self.kernel.buffers[buffer].dtype != "f32":
             raise CompileError(f"buffer {buffer!r} has dtype {self.kernel.buffers[buffer].dtype}")
         if buffer not in self.globals:
@@ -398,18 +492,43 @@ def _straight_line(body) -> Iterator:
             yield from _straight_line(stmt.else_body)
 
 
-def _names_used(node) -> set[str]:
-    """Every name an IR subtree refers to: its Vars, plus TreeHalve's tid variable (a string)."""
-    found: set[str] = set()
+def _raster_pair(tile, extents: list[int]) -> tuple[int, int, int] | None:
+    """(grouped axis, other axis, group size) when the tile rasterizes its CTA order. That needs
+    a group of at least 2 and the (m, n) block axes adjacent, m first."""
+    if not (tile.raster_group and tile.raster_axes):
+        return None
+    names = [axis.name for axis in tile.axes]
+    m_axis, n_axis = tile.raster_axes
+    if m_axis not in names or n_axis not in names:
+        return None
+    m, n = names.index(m_axis), names.index(n_axis)
+    if n != m + 1:
+        return None
+    grouped, other = (m, n) if tile.raster_orient == "m" else (n, m)
+    group = min(tile.raster_group, extents[grouped])
+    if extents[grouped] <= 1 or group <= 1:
+        return None
+    return grouped, other, group
+
+
+def _walk(node) -> Iterator:
+    """Every IR node (statement or expression) under `node`, parents before children."""
     stack = [node]
     while stack:
         item = stack.pop()
+        if dataclasses.is_dataclass(item) and not isinstance(item, type):
+            yield item
+            stack.extend(reversed([getattr(item, f.name) for f in dataclasses.fields(item)]))
+        elif isinstance(item, (tuple, list)):
+            stack.extend(reversed(item))
+
+
+def _names_used(node) -> set[str]:
+    """Every name an IR subtree refers to: its Vars, plus TreeHalve's tid variable (a string)."""
+    found: set[str] = set()
+    for item in _walk(node):
         if isinstance(item, Var):
             found.add(item.name)
         elif isinstance(item, TreeHalve):
             found.add(item.tid_var)
-        if dataclasses.is_dataclass(item) and not isinstance(item, type):
-            stack.extend(getattr(item, f.name) for f in dataclasses.fields(item))
-        elif isinstance(item, (tuple, list)):
-            stack.extend(item)
     return found
