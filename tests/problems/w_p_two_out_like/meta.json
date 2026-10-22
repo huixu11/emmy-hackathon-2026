@@ -1,0 +1,66 @@
+{
+ "id": "w_p_two_out_like",
+ "code": "x = torch.randn(64, 64); y = torch.randn(64, 64); (x + y) * (x - y)",
+ "rtol": 1e-06,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x",
+  "y"
+ ],
+ "graph_outputs": [
+  "mul"
+ ],
+ "kernels": [
+  {
+   "node": "mul",
+   "entry": "k_mul_pointwise",
+   "arg_order": [
+    "y",
+    "x",
+    "mul"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "y",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "mul",
+     "dtype": "f32",
+     "shape": [
+      64,
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

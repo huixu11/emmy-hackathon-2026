@@ -1,0 +1,66 @@
+{
+ "id": "v_p_bcast_col",
+ "code": "x = torch.randn(48, 80); c = torch.randn(48, 1); x - c",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x",
+  "c"
+ ],
+ "graph_outputs": [
+  "sub"
+ ],
+ "kernels": [
+  {
+   "node": "sub",
+   "entry": "k_sub_pointwise",
+   "arg_order": [
+    "c",
+    "x",
+    "sub"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "c",
+     "dtype": "f32",
+     "shape": [
+      48,
+      1
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      48,
+      80
+     ],
+     "seed": 0
+    },
+    {
+     "name": "sub",
+     "dtype": "f32",
+     "shape": [
+      48,
+      80
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

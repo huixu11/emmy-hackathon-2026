@@ -1,0 +1,109 @@
+{
+ "id": "w_f_gelu_mlp",
+ "code": "x = torch.randn(64, 128); w = torch.randn(128, 256); b = torch.randn(256); torch.nn.functional.gelu(x @ w + b)",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "x",
+  "w",
+  "b"
+ ],
+ "graph_outputs": [
+  "gelu"
+ ],
+ "kernels": [
+  {
+   "node": "gelu",
+   "entry": "k_matmul_2db247",
+   "arg_order": [
+    "gelu_inv_sqrt2",
+    "gelu_half",
+    "gelu_one",
+    "b",
+    "x",
+    "w",
+    "gelu"
+   ],
+   "grid": [
+    6,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "gelu_inv_sqrt2",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.7071067811865475
+     ]
+    },
+    {
+     "name": "gelu_half",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.5
+     ]
+    },
+    {
+     "name": "gelu_one",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.0
+     ]
+    },
+    {
+     "name": "b",
+     "dtype": "f32",
+     "shape": [
+      256
+     ],
+     "seed": 2
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      128
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f32",
+     "shape": [
+      128,
+      256
+     ],
+     "seed": 1
+    },
+    {
+     "name": "gelu",
+     "dtype": "f32",
+     "shape": [
+      64,
+      256
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

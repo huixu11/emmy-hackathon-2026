@@ -1,0 +1,76 @@
+{
+ "id": "v_p_bcast_row",
+ "code": "x = torch.randn(64, 96); b = torch.randn(96); x * b + 1.5",
+ "rtol": 1e-06,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x",
+  "b"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_add_pointwise",
+   "arg_order": [
+    "add_c1",
+    "b",
+    "x",
+    "add"
+   ],
+   "grid": [
+    6,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.5
+     ]
+    },
+    {
+     "name": "b",
+     "dtype": "f32",
+     "shape": [
+      96
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      96
+     ],
+     "seed": 0
+    },
+    {
+     "name": "add",
+     "dtype": "f32",
+     "shape": [
+      64,
+      96
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

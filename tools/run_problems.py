@@ -3,6 +3,7 @@
 
     python tools/run_problems.py                                 # every problem
     python tools/run_problems.py p00_scalar_add r01_array_sum    # just these
+    python tools/run_problems.py --dir tests/problems            # every problem in a folder
     python tools/run_problems.py --via-proxy                     # see below
 
 Prints one line per problem, the full submit.py output for failures, and exits 0 only if all
@@ -64,19 +65,20 @@ def check(problem: str, compiler: str) -> tuple[bool, list[str]]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("problems", nargs="*", help="problem ids (default: all)")
+    ap.add_argument("problems", nargs="*", help="problem ids or folders (default: all of --dir)")
+    ap.add_argument("--dir", type=Path, default=submit.PROBLEMS, help="folder of problems (default: problems/)")
     ap.add_argument("--compiler", default=str(REPO / "compile.py"))
     ap.add_argument("--via-proxy", action="store_true", help="tunnel runner requests through $HTTPS_PROXY")
     args = ap.parse_args()
 
     if args.via_proxy:
         submit.post = tunneled_post
-    problems = args.problems or sorted(p.name for p in submit.PROBLEMS.iterdir() if (p / "meta.json").exists())
+    problems = args.problems or sorted(str(p) for p in args.dir.iterdir() if (p / "meta.json").exists())
 
     failed = 0
     for problem in problems:
         passed, lines = check(problem, args.compiler)
-        print(f"{'PASS' if passed else 'FAIL'}  {problem:20s} {lines[-1] if lines else ''}")
+        print(f"{'PASS' if passed else 'FAIL'}  {Path(problem).name:20s} {lines[-1] if lines else ''}")
         if not passed:
             failed += 1
             print("\n".join("      " + line for line in lines))

@@ -1,0 +1,66 @@
+{
+ "id": "w_m_skinny",
+ "code": "torch.randn(8, 2048) @ torch.randn(2048, 16)",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul_9db027",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f32",
+     "shape": [
+      2048,
+      16
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f32",
+     "shape": [
+      8,
+      2048
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f32",
+     "shape": [
+      8,
+      16
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

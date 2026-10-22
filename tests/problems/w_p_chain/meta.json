@@ -1,0 +1,75 @@
+{
+ "id": "w_p_chain",
+ "code": "x = torch.randn(4096); torch.tanh(x * 2.0 + 1.0) * x",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "mul_1"
+ ],
+ "kernels": [
+  {
+   "node": "mul_1",
+   "entry": "k_mul_1_pointwise",
+   "arg_order": [
+    "mul_c1",
+    "add_c1",
+    "x",
+    "mul_1"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "mul_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      2.0
+     ]
+    },
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "mul_1",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}
