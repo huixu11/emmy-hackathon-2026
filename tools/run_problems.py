@@ -69,6 +69,9 @@ def check(problem: str, compiler: str) -> tuple[bool, list[str]]:
         code = exc.code
         if isinstance(code, str):
             out.write(code + "\n")
+    except Exception as exc:  # noqa: BLE001 - e.g. an output of the wrong size; report, go on
+        code = 1
+        out.write(f"submit.py raised {type(exc).__name__}: {exc}\n")
     finally:
         sys.argv = saved_argv
     return code == 0, out.getvalue().strip().splitlines()

@@ -1,0 +1,68 @@
+{
+ "id": "x_m_bt",
+ "code": "a = torch.randn(64, 48); b = torch.randn(80, 48); a @ b.t()",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "a",
+  "b"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul",
+   "arg_order": [
+    "b",
+    "a",
+    "matmul"
+   ],
+   "grid": [
+    192,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [
+    "matmul"
+   ],
+   "args": [
+    {
+     "name": "b",
+     "dtype": "f32",
+     "shape": [
+      80,
+      48
+     ],
+     "seed": 1
+    },
+    {
+     "name": "a",
+     "dtype": "f32",
+     "shape": [
+      64,
+      48
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f32",
+     "shape": [
+      64,
+      80
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

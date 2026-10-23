@@ -1,0 +1,96 @@
+{
+ "id": "x_a_sdpa_b2h4",
+ "code": "q = torch.randn(2, 4, 32, 16); k = torch.randn(2, 4, 32, 16); v = torch.randn(2, 4, 32, 16); torch.nn.functional.scaled_dot_product_attention(q, k, v)",
+ "rtol": 0.001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "q",
+  "k",
+  "v"
+ ],
+ "graph_outputs": [
+  "scaled_dot_product_attention"
+ ],
+ "kernels": [
+  {
+   "node": "scaled_dot_product_attention",
+   "entry": "k_sdpa_74bd60",
+   "arg_order": [
+    "scaled_dot_product_attention_scale",
+    "q",
+    "k",
+    "v",
+    "scaled_dot_product_attention"
+   ],
+   "grid": [
+    8,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "scaled_dot_product_attention_scale",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.25
+     ]
+    },
+    {
+     "name": "q",
+     "dtype": "f32",
+     "shape": [
+      2,
+      4,
+      32,
+      16
+     ],
+     "seed": 0
+    },
+    {
+     "name": "k",
+     "dtype": "f32",
+     "shape": [
+      2,
+      4,
+      32,
+      16
+     ],
+     "seed": 1
+    },
+    {
+     "name": "v",
+     "dtype": "f32",
+     "shape": [
+      2,
+      4,
+      32,
+      16
+     ],
+     "seed": 2
+    },
+    {
+     "name": "scaled_dot_product_attention",
+     "dtype": "f32",
+     "shape": [
+      2,
+      4,
+      32,
+      16
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

@@ -1,0 +1,66 @@
+{
+ "id": "x_p_sincos",
+ "code": "x = torch.randn(64, 32); t = torch.randn(64, 32); x * torch.cos(t) - x * torch.sin(t)",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x",
+  "t"
+ ],
+ "graph_outputs": [
+  "sub"
+ ],
+ "kernels": [
+  {
+   "node": "sub",
+   "entry": "k_sub_pointwise",
+   "arg_order": [
+    "t",
+    "x",
+    "sub"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "t",
+     "dtype": "f32",
+     "shape": [
+      64,
+      32
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      32
+     ],
+     "seed": 0
+    },
+    {
+     "name": "sub",
+     "dtype": "f32",
+     "shape": [
+      64,
+      32
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

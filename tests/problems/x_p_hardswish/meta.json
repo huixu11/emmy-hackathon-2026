@@ -1,0 +1,97 @@
+{
+ "id": "x_p_hardswish",
+ "code": "x = torch.randn(2048); x * torch.clamp(x + 3.0, 0.0, 6.0) / 6.0",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "div"
+ ],
+ "kernels": [
+  {
+   "node": "div",
+   "entry": "k_div_pointwise",
+   "arg_order": [
+    "add_c1",
+    "clamp_bound0",
+    "clamp_bound1",
+    "div_c1",
+    "x",
+    "div"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      3.0
+     ]
+    },
+    {
+     "name": "clamp_bound0",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.0
+     ]
+    },
+    {
+     "name": "clamp_bound1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      6.0
+     ]
+    },
+    {
+     "name": "div_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      6.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      2048
+     ],
+     "seed": 0
+    },
+    {
+     "name": "div",
+     "dtype": "f32",
+     "shape": [
+      2048
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

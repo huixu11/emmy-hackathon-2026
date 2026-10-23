@@ -20,6 +20,9 @@ def main(argv: list[str]) -> int:
     except CompileError as exc:
         print(f"compile.py: {argv[1]}: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:  # a missing or unreadable IR file
+        print(f"compile.py: {exc}", file=sys.stderr)
+        return 1
     sys.stdout.write(ptx)
     return 0
 
