@@ -1,0 +1,51 @@
+extern "C" __global__
+__launch_bounds__(256) void k_linear_105599(const float* x2, const float* x1, const float* x0, float* linear) {
+    int _gid = blockIdx.x * blockDim.x + threadIdx.x;
+        int a0_b = _gid / 32;
+        int a1_b = (_gid) % 32;
+        int a0_u = (_gid) % 1;
+        int a1_u = (_gid) % 1;
+        float acc0__c0_0 = 0.0f;
+        float acc0__c0_1 = 0.0f;
+        float acc0__c0_2 = 0.0f;
+        float acc0__c1_0 = 0.0f;
+        float acc0__c1_1 = 0.0f;
+        float acc0__c1_2 = 0.0f;
+        for (int a2 = 0; a2 < 128; a2++) {
+            float in0__ar0 = x0[(a0_b * 2 + a0_u * 2) * 128 + a2];
+            float in1__bc0 = x1[(a1_b * 3 + a1_u * 3) * 128 + a2];
+            float v0__c0_0 = in0__ar0 * in1__bc0;
+            acc0__c0_0 += v0__c0_0;
+            float in1__bc1 = x1[(a1_b * 3 + a1_u * 3 + 1) * 128 + a2];
+            float v0__c0_1 = in0__ar0 * in1__bc1;
+            acc0__c0_1 += v0__c0_1;
+            float in1__bc2 = x1[(a1_b * 3 + a1_u * 3 + 2) * 128 + a2];
+            float v0__c0_2 = in0__ar0 * in1__bc2;
+            acc0__c0_2 += v0__c0_2;
+            float in0__ar1 = x0[(a0_b * 2 + a0_u * 2 + 1) * 128 + a2];
+            float v0__c1_0 = in0__ar1 * in1__bc0;
+            acc0__c1_0 += v0__c1_0;
+            float v0__c1_1 = in0__ar1 * in1__bc1;
+            acc0__c1_1 += v0__c1_1;
+            float v0__c1_2 = in0__ar1 * in1__bc2;
+            acc0__c1_2 += v0__c1_2;
+        }
+        float in2__c0_0 = x2[a1_b * 3 + a1_u * 3];
+        float v1__c0_0 = acc0__c0_0 + in2__c0_0;
+        linear[(a0_b * 2 + a0_u * 2) * 96 + (a1_b * 3 + a1_u * 3)] = v1__c0_0;
+        float in2__c0_1 = x2[a1_b * 3 + a1_u * 3 + 1];
+        float v1__c0_1 = acc0__c0_1 + in2__c0_1;
+        linear[(a0_b * 2 + a0_u * 2) * 96 + (a1_b * 3 + a1_u * 3 + 1)] = v1__c0_1;
+        float in2__c0_2 = x2[a1_b * 3 + a1_u * 3 + 2];
+        float v1__c0_2 = acc0__c0_2 + in2__c0_2;
+        linear[(a0_b * 2 + a0_u * 2) * 96 + (a1_b * 3 + a1_u * 3 + 2)] = v1__c0_2;
+        float in2__c1_0 = x2[a1_b * 3 + a1_u * 3];
+        float v1__c1_0 = acc0__c1_0 + in2__c1_0;
+        linear[(a0_b * 2 + a0_u * 2 + 1) * 96 + (a1_b * 3 + a1_u * 3)] = v1__c1_0;
+        float in2__c1_1 = x2[a1_b * 3 + a1_u * 3 + 1];
+        float v1__c1_1 = acc0__c1_1 + in2__c1_1;
+        linear[(a0_b * 2 + a0_u * 2 + 1) * 96 + (a1_b * 3 + a1_u * 3 + 1)] = v1__c1_1;
+        float in2__c1_2 = x2[a1_b * 3 + a1_u * 3 + 2];
+        float v1__c1_2 = acc0__c1_2 + in2__c1_2;
+        linear[(a0_b * 2 + a0_u * 2 + 1) * 96 + (a1_b * 3 + a1_u * 3 + 2)] = v1__c1_2;
+}

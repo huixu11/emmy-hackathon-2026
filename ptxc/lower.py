@@ -15,7 +15,7 @@ from collections.abc import Iterator
 from emmy.compiler.ir.expr import Literal, Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
-from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load, SelectBranch
 
 from .errors import CompileError
 from .facts import Fact
@@ -440,6 +440,23 @@ class KernelLowering:
         args = [self._operand(name) for name in assign.args]
         emit_elementwise(self.b, assign.op.name, self._register(assign.name), args)
 
+    def visit_Select(self, select) -> None:
+        """name = the value of the first branch whose predicate holds; the last branch is the
+        default. A predicate the facts settle drops out, so a known choice costs nothing."""
+        choice = self._operand(select.branches[-1].value)
+        for branch in reversed(select.branches[:-1]):
+            holds = self.idx.pred(branch.select)
+            if holds is True:
+                choice = self._operand(branch.value)
+            elif holds is not False:
+                reg = self.b.reg("f32")
+                self.b.emit("selp.f32", reg, self._operand(branch.value), choice, holds)
+                choice = reg
+        if self.scopes.find(select.name) is None:
+            self.scopes.define(select.name, choice)
+        else:
+            self.b.emit("mov.f32", self._register(select.name), choice)
+
     def visit_Accum(self, acc) -> None:
         """acc = op(base, value), where base defaults to the accumulator itself."""
         _require_f32(acc.dtype, acc.name)
@@ -722,13 +739,18 @@ def _walk(node) -> Iterator:
 
 
 def _string_leaves(node) -> Iterator[str]:
-    """The string fields of one IR node, looking inside tuples (names, args, values)."""
+    """The string fields of one IR node, looking inside tuples (names, args, values) and the
+    records they hold (a Select's branches)."""
     for f in dataclasses.fields(node):
         value = getattr(node, f.name)
         if isinstance(value, str):
             yield value
         elif isinstance(value, tuple):
-            yield from (v for v in value if isinstance(v, str))
+            for v in value:
+                if isinstance(v, str):
+                    yield v
+                elif isinstance(v, SelectBranch):
+                    yield from _string_leaves(v)
 
 
 def _names_used(node) -> set[str]:

@@ -254,6 +254,55 @@ def _log(b: PtxBuilder, dst: str, x: str) -> None:
     b.emit("selp.f32", dst, acc, fallback, ok)
 
 
+# sin and cos as in cephes' sinf.c: j = |x| / (pi/4) truncated, then rounded up to even, and
+# r = |x| - j*pi/4 in [-pi/4, pi/4], with pi/4 split into three f32 parts (one fma each, so the
+# reduction stays accurate far past |x| = 1e4). Then cephes' minimax polynomial for sin or cos
+# on r; j mod 8 picks the polynomial and the sign. Relative error < 2.4e-7 up to |x| = 1e4.
+_PI4_HI = _f32(math.pi / 4)
+_PI4_MID = _f32(math.pi / 4 - _PI4_HI)
+_PI4_LO = _f32(math.pi / 4 - _PI4_HI - _PI4_MID)
+_SIN_P = [-1.6666654611e-1, 8.3321608736e-3, -1.9515295891e-4]
+_COS_P = [4.166664568298827e-2, -1.388731625493765e-3, 2.443315711809948e-5]
+
+
+def _sincos(cos: bool) -> Callable[..., None]:
+    def emit(b: PtxBuilder, dst: str, x: str) -> None:
+        ax, t, y, r, z, ps, s, zz, h, c, v = _regs(b, 11)
+        j, odd, quad, sign, bits = (b.reg("b32") for _ in range(5))
+        use_cos = b.reg("pred")
+        b.emit("abs.f32", ax, x)
+        b.emit("mul.rn.f32", t, ax, f32_imm(4 / math.pi))
+        b.emit("cvt.rzi.s32.f32", j, t)
+        b.emit("and.b32", odd, j, 1)
+        b.emit("add.s32", j, j, odd)
+        b.emit("cvt.rn.f32.s32", y, j)
+        b.emit("fma.rn.f32", r, y, f32_imm(-_PI4_HI), ax)
+        b.emit("fma.rn.f32", r, y, f32_imm(-_PI4_MID), r)
+        b.emit("fma.rn.f32", r, y, f32_imm(-_PI4_LO), r)
+        if cos:
+            b.emit("add.s32", j, j, 2)  # cos|x| = sin(|x| + pi/2)
+        b.emit("mul.rn.f32", z, r, r)
+        b.emit("mul.rn.f32", ps, _poly(b, z, _SIN_P), z)
+        b.emit("fma.rn.f32", s, ps, r, r)  # r + r^3 P(r^2)
+        b.emit("mul.rn.f32", zz, z, z)
+        b.emit("fma.rn.f32", h, z, f32_imm(-0.5), ONE)
+        b.emit("fma.rn.f32", c, _poly(b, z, _COS_P), zz, h)  # 1 - r^2/2 + r^4 Q(r^2)
+        b.emit("and.b32", quad, j, 2)
+        b.emit("setp.ne.s32", use_cos, quad, 0)
+        b.emit("selp.f32", v, c, s, use_cos)
+        b.emit("and.b32", sign, j, 4)
+        b.emit("shl.b32", sign, sign, 29)  # j & 4 flips the sign bit
+        if not cos:  # sin is odd: x's sign as well
+            xs = b.reg("b32")
+            b.emit("mov.b32", xs, x)
+            b.emit("and.b32", xs, xs, "0x80000000")
+            b.emit("xor.b32", sign, sign, xs)
+        b.emit("mov.b32", bits, v)
+        b.emit("xor.b32", bits, bits, sign)
+        b.emit("mov.b32", dst, bits)
+    return emit
+
+
 _POW_INT_LIMIT = 64  # integral exponents up to this go through repeated squaring
 
 
@@ -348,6 +397,8 @@ _COMPOSITE: dict[str, tuple[Callable[..., None], int]] = {
     "gelu": (_gelu, 1),
     "gelu_tanh": (_gelu_tanh, 1),
     "log": (_log, 1),
+    "sin": (_sincos(cos=False), 1),
+    "cos": (_sincos(cos=True), 1),
     "pow": (_pow, 2),
     "where": (_where, 3),
     "bitwise_and": (_logical("and"), 2),
