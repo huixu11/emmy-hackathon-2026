@@ -12,7 +12,7 @@ import math
 from collections import Counter
 from collections.abc import Iterator
 
-from emmy.compiler.ir.expr import Literal, Var
+from emmy.compiler.ir.expr import BinaryExpr, Literal, Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load, SelectBranch
@@ -33,12 +33,14 @@ _SMEM_POOL = "sh_pool"
 _GLOBAL_ALIGN = 16  # buffer base alignment; the IR's own v4 accesses rely on at least this
 # Unrolling limits, in IR statements. The enclosing budget was measured on attention kernels:
 # when unrolling the inner loops would grow the loop around them past it (several 64-trip
-# inner products per trip), ptxas does better with them rolled (it unrolls and hoists itself).
+# inner products per trip), ptxas does better with them rolled (it unrolls and hoists itself),
+# unless they stream rows that only unrolling here turns into vector loads (_streams_rows).
 _UNROLL_BUDGET = 1024           # a fully unrolled loop the IR marks unroll
 _IMPLICIT_UNROLL_BUDGET = 512   # a fully unrolled loop the IR does not mark
 _ENCLOSING_UNROLL_BUDGET = 384  # the body of a loop whose inner loops unroll without the IR asking
 _FULL_UNROLL_TRIPS = 64         # most trips unrolled completely without the IR asking
 _PARTIAL_UNROLL_BUDGET = 128    # one iteration of a partially unrolled loop
+_OUTER_UNROLL_BUDGET = 16384    # a short top-level loop with inner loops, unrolled whole
 
 
 @dataclasses.dataclass(frozen=True)
@@ -289,6 +291,15 @@ class KernelLowering:
             if n == 1 or (not has_loop and wanted and n * size <= budget):
                 self._unrolled(var, start, step.const, n, body)
                 return
+            # A short top-level loop around inner loops, such as attention's walk over 16 to 64
+            # keys of q @ kt, is unrolled whole, so ptxas can issue one key's scattered column
+            # loads while the previous key's softmax update still runs (NVVM unrolls these too).
+            # A loop whose inner loops stream rows (SDPA's k) stays rolled: its trips already
+            # load in vectors, and unrolled it measured up to 1.9x slower.
+            if (has_loop and not self._in_loop and n <= _FULL_UNROLL_TRIPS
+                    and n * _expanded_size(body) <= _OUTER_UNROLL_BUDGET and not _streams_rows(var, body)):
+                self._unrolled(var, start, step.const, n, body)
+                return
             # A constant start leaves ptxas a constant trip count. Inside another loop it does
             # best itself (unrolling the inner loop and hoisting its invariant loads out of the
             # outer one); elsewhere it may leave a long loop rolled, and it never merges shared
@@ -345,7 +356,7 @@ class KernelLowering:
         """A real loop, `factor` trips per iteration; then, unless every thread's trip count is
         a multiple of the factor, a loop of single trips for the rest. Tested at the bottom."""
         saved = self._unroll_room, self._in_loop
-        self._unroll_room = _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET
+        self._unroll_room = _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET or _streams_rows(var, body)
         self._in_loop = True
         try:
             self._emit_counted_loop(var, start, end, step, body, factor, uniform)
@@ -724,6 +735,33 @@ def _expanded_size(body) -> int:
         else:
             total += 1
     return total
+
+
+def _streams_rows(outer: str, body) -> bool:
+    """Whether an inner loop of `body` reads, at unit stride along its own axis, a row that
+    changes with every trip of the loop over `outer`: attention's k[..., key, d] under
+    `for key`. ptxas cannot hoist those loads out of the outer loop and keeps them scalar;
+    unrolled here, vectorize.py merges them into .v4 loads, a quarter of the instructions."""
+    for stmt in _straight_line(body):
+        if not isinstance(stmt, Loop):
+            continue
+        inner = stmt.axis.name
+        for node in _walk(stmt):
+            if (isinstance(node, Load) and node.index and _unit_stride(node.index[-1], inner)
+                    and not any(inner in _names_used(e) for e in node.index[:-1])
+                    and any(outer in _names_used(e) for e in node.index)):
+                return True
+    return False
+
+
+def _unit_stride(e, name: str) -> bool:
+    """Whether `e` is `name` plus terms that do not use it."""
+    if isinstance(e, Var):
+        return e.name == name
+    if isinstance(e, BinaryExpr) and e.op == "+":
+        return ((_unit_stride(e.left, name) and name not in _names_used(e.right))
+                or (_unit_stride(e.right, name) and name not in _names_used(e.left)))
+    return False
 
 
 def _walk(node) -> Iterator:

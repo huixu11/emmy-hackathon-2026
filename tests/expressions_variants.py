@@ -275,3 +275,30 @@ OPEN = [
     dict(id="x_a_long_kv", code="q = torch.randn(32, 64); kt = torch.randn(64, 1024); v = torch.randn(1024, 64); torch.softmax(q @ kt / 8.0, dim=-1) @ v",
          ref=lambda q, kt, v: [f32(_softmax(f64(q) @ f64(kt) / 8.0) @ f64(v))], rtol=1e-3, atol=1e-4),
 ]
+
+def _attn(nq, d, nk, dv, s):
+    """softmax(q @ kt * s) @ v, with kt stored transposed (columns of keys)."""
+    return dict(id=f"y_a_{nq}x{d}x{nk}x{dv}",
+                code=f"q = torch.randn({nq}, {d}); kt = torch.randn({d}, {nk}); v = torch.randn({nk}, {dv}); "
+                     f"torch.softmax(q @ kt * {s}, dim=-1) @ v",
+                ref=lambda q, kt, v: [f32(_softmax(f64(q) @ f64(kt) * s) @ f64(v))], rtol=1e-3, atol=1e-4)
+
+
+def _sdpa(b, h, n, d):
+    """scaled_dot_product_attention, with k stored as rows of keys."""
+    return dict(id=f"y_s_{b}x{h}x{n}x{d}",
+                code=f"q = torch.randn({b}, {h}, {n}, {d}); k = torch.randn({b}, {h}, {n}, {d}); "
+                     f"v = torch.randn({b}, {h}, {n}, {d}); torch.nn.functional.scaled_dot_product_attention(q, k, v)",
+                ref=lambda q, k, v: [f32(_softmax(f64(q) @ np.swapaxes(f64(k), -1, -2) / math.sqrt(d)) @ f64(v))],
+                rtol=1e-3, atol=1e-4)
+
+
+# ---- batch 4: attention shapes that pick each loop shape (short and long key walks, both layouts) ----
+OPEN += [
+    _attn(64, 64, 256, 64, 0.125), _attn(128, 64, 128, 64, 0.125), _attn(16, 64, 512, 64, 0.125),
+    _attn(256, 32, 256, 32, 0.17), _attn(32, 128, 256, 64, 0.088), _attn(96, 64, 96, 48, 0.125),
+    _attn(64, 64, 32, 64, 0.125), _attn(32, 64, 64, 64, 0.125), _attn(48, 32, 48, 32, 0.17),
+    _attn(64, 32, 16, 32, 0.17),
+    _sdpa(1, 4, 128, 64), _sdpa(2, 2, 32, 64), _sdpa(1, 8, 64, 32), _sdpa(1, 1, 256, 64),
+    _sdpa(2, 2, 32, 32), _sdpa(4, 2, 32, 64), _sdpa(2, 4, 16, 64), _sdpa(1, 2, 48, 64), _sdpa(2, 2, 64, 32),
+]
