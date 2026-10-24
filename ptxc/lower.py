@@ -8,6 +8,7 @@ maps to its operand, a register such as %f3 or an immediate such as 0f3F800000.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 from collections import Counter
 from collections.abc import Iterator
@@ -15,7 +16,7 @@ from collections.abc import Iterator
 from emmy.compiler.ir.expr import BinaryExpr, Literal, Var
 from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
-from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load, SelectBranch
+from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Select, SelectBranch, Write
 
 from .errors import CompileError
 from .facts import Fact
@@ -74,6 +75,12 @@ class KernelLowering:
         self._trips: list[tuple[str, int]] = []  # (variable, trip) of the unrolled copies being emitted
         # Load site -> registers that already hold its values (see _prefetch_plan).
         self._prefetched: dict[tuple, list[str]] | None = None
+        # Accumulators computed once for the copies that always equal them
+        # (_equal_accumulators): loop body -> {copy: the accumulator it equals}; and, while a
+        # trip is emitted, its copies and the accumulators they follow.
+        self._merged: dict[int, dict[str, str]] = {}
+        self._copies: dict[str, str] = {}
+        self._followed: set[str] = set()
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -170,11 +177,11 @@ class KernelLowering:
 
     def _fma(self, product, acc) -> None:
         _require_f32(product.dtype, product.name)
-        dst = self.scopes.find(acc.name)
-        if dst is None:
-            raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
         a, c = (self._operand(name) for name in product.args)
-        base = self._operand(acc.base) if acc.base else dst
+        target = self._accumulator(acc)
+        if target is None:
+            return
+        dst, base = target
         if ONE in (a, c):  # softmax's `one * beta`: exactly an add
             self.b.emit("add.rn.f32", dst, base, c if a == ONE else a)
         else:
@@ -286,7 +293,7 @@ class KernelLowering:
         still run in order, so every accumulator folds exactly as the IR says.
         """
         if seed:
-            self._seed_accumulators(body)
+            self._merged[id(body)] = self._seed_accumulators(body, self._equal_accumulators(body))
         trips = self._trip_range(start, end, step)
         if trips == (0, 0):
             return
@@ -343,10 +350,20 @@ class KernelLowering:
     def _copy(self, var: str, value: Lin, body, annotate: bool, hoist: Mark | None = None) -> None:
         """One copy of a loop body with `var` bound to `value`. Index arithmetic that does not
         depend on the copy moves to `hoist` (by default, the start of this copy) and is shared
-        with the copies that follow."""
+        with the copies that follow. An accumulator that merged copies follow gets its trip's
+        value in a fresh register (_accumulator), moved back at the end of the trip."""
+        merged = self._merged.get(id(body), {})
+        saved = self._copies, self._followed
         with self.scopes.nested(hoist=hoist or self.b.mark()):
             self.scopes.define(var, value)
-            self._stmts(body, annotate=annotate)
+            carried = {name: self.scopes.lookup(name) for name in set(merged.values())}
+            self._copies, self._followed = {**saved[0], **merged}, saved[1] | set(carried)
+            try:
+                self._stmts(body, annotate=annotate)
+            finally:
+                self._copies, self._followed = saved
+            for name, reg in carried.items():
+                self.b.emit("mov.f32", reg, self.scopes.lookup(name))
 
     def _unrolled(self, var: str, start: Lin, step: int, n: int, body) -> None:
         for k in range(n):
@@ -529,14 +546,83 @@ class KernelLowering:
         self.b.emit("bra", head, guard=again)
         self.b.place(done)
 
-    def _seed_accumulators(self, body) -> None:
+    def _seed_accumulators(self, body, same: dict[str, str]) -> dict[str, str]:
         """A seeding loop starts each accumulator it folds at the fold's identity (0 for add,
-        -1e30 for maximum, ...). Accumulators inside nested loops are those loops' business."""
+        -1e30 for maximum, ...). Accumulators inside nested loops are those loops' business.
+        A copy in `same` (_equal_accumulators) gets no register: its name stands for the
+        accumulator it equals. Returns the copies merged that way; one already defined
+        outside the loop keeps its own register, which code after the loop reads."""
+        merged = {}
         for stmt in _straight_line(body):
             if isinstance(stmt, Accum):
                 if stmt.op.identity is None:
                     raise CompileError(f"accumulator {stmt.name!r}: {stmt.op.name} has no identity")
-                self.b.emit("mov.f32", self._register(stmt.name), f32_imm(stmt.op.identity))
+                if stmt.name in same and self.scopes.find(stmt.name) is None:
+                    self.scopes.define(stmt.name, self.scopes.lookup(same[stmt.name]))
+                    merged[stmt.name] = same[stmt.name]
+                else:
+                    self.b.emit("mov.f32", self._register(stmt.name), f32_imm(stmt.op.identity))
+        return merged
+
+    def _equal_accumulators(self, body) -> dict[str, str]:
+        """Accumulators of a seeding loop that hold equal values after every trip: copy -> the
+        accumulator it equals, the first of them the body updates.
+
+        Emmy repeats online softmax's running max and sum for each output column a thread
+        owns (acc1__c0_0 and acc1__c0_1 are one row's max), and neither ptxas nor NVVM merges
+        values carried around a loop. Accumulators are equal when they start at the same
+        identity and each trip folds equal values into them. That is checked by numbering
+        the values of one trip, given that the accumulators of a class are equal at its start,
+        and splitting the classes whose new values differ until none does: the optimistic
+        rule of value numbering for loops. A body with statements other than plain values,
+        loads, writes, branches and loops is left alone, and so is an accumulator written
+        twice or inside a nested statement.
+        """
+        plain = (Assign, Accum, Let, Select, Load, Write, Loop, StridedLoop, Cond)
+        defined: Counter = Counter()
+        for stmt in _statements(body):
+            if not isinstance(stmt, plain):
+                return {}
+            defined.update(_defined(stmt))
+        folds = [s for s in body if isinstance(s, Accum) and defined[s.name] == 1 and s.op.identity is not None]
+        identities: dict[str, int] = {}
+        cls = {s.name: identities.setdefault(repr(float(s.op.identity)), len(identities)) for s in folds}
+        while True:
+            values = self._value_numbers(body, cls)
+            keys: dict[tuple, int] = {}
+            refined = {name: keys.setdefault((c, values[name]), len(keys)) for name, c in cls.items()}
+            if len(keys) == len(set(cls.values())):
+                break
+            cls = refined
+        first: dict[int, str] = {}
+        return {name: first[c] for name, c in cls.items() if first.setdefault(c, name) != name}
+
+    def _value_numbers(self, body, cls: dict[str, int]) -> dict[str, tuple]:
+        """A token for each name after one trip of `body`: names with equal tokens hold equal
+        values, given that the accumulators of one class in `cls` are equal at the start."""
+        tokens: dict[str, tuple] = {name: ("start", c) for name, c in cls.items()}
+        fresh = itertools.count()
+
+        def of(name: str) -> tuple:
+            return tokens.get(name, ("outside", name))
+
+        for stmt in body:
+            if isinstance(stmt, Assign):
+                tokens[stmt.name] = (stmt.op.name, *map(of, stmt.args))
+            elif isinstance(stmt, Let):
+                tokens[stmt.name] = ("let", repr(stmt.value), *map(of, sorted(_names_used(stmt.value))))
+            elif (isinstance(stmt, Load) and stmt.input not in self.shared
+                  and not self.kernel.buffers[stmt.input].is_output):
+                where = ("load", stmt.input, repr(stmt.index), *map(of, sorted(_names_used(stmt.index))))
+                for k, name in enumerate(stmt.names):
+                    tokens[name] = (*where, k)
+            elif isinstance(stmt, Accum) and stmt.name in cls:
+                tokens[stmt.name] = ("fold", stmt.op.name, of(stmt.base or stmt.name), of(stmt.value))
+            else:  # values this does not follow: each its own
+                for inner in _statements((stmt,)):
+                    for name in _defined(inner):
+                        tokens[name] = ("opaque", next(fresh))
+        return tokens
 
     def visit_Cond(self, cond) -> None:
         p = self.idx.pred(cond.cond)
@@ -596,11 +682,28 @@ class KernelLowering:
     def visit_Accum(self, acc) -> None:
         """acc = op(base, value), where base defaults to the accumulator itself."""
         _require_f32(acc.dtype, acc.name)
+        value = self._operand(acc.value)
+        target = self._accumulator(acc)
+        if target is not None:
+            emit_elementwise(self.b, acc.op.name, target[0], [target[1], value])
+
+    def _accumulator(self, acc) -> tuple[str, str] | None:
+        """(the register acc's new value goes to, the base it folds into), or None for a copy
+        merged into an accumulator the trip has already updated: then acc's name now stands
+        for that one's new value. An accumulator copies follow takes a fresh register, since
+        they read its old value until their own update (_copy moves the new one back)."""
+        same = self._copies.get(acc.name)
+        if same is not None:
+            self.scopes.define(acc.name, self._operand(same))
+            return None
         dst = self.scopes.find(acc.name)
         if dst is None:
             raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
-        lhs = self._operand(acc.base) if acc.base else dst
-        emit_elementwise(self.b, acc.op.name, dst, [lhs, self._operand(acc.value)])
+        base = self._operand(acc.base) if acc.base else dst
+        if acc.name in self._followed:
+            dst = self.b.reg("f32")
+            self.scopes.define(acc.name, dst)
+        return dst, base
 
     def visit_Load(self, load) -> None:
         _require_f32(load.dtype, load.input)
@@ -824,6 +927,23 @@ def _is_float(dtype) -> bool:
 def _require_f32(dtype, what: str) -> None:
     if dtype is not None and not _is_float(dtype):
         raise CompileError(f"{what}: dtype {getattr(dtype, 'name', dtype)} is not supported (f32 only)")
+
+
+def _statements(body) -> Iterator:
+    """Every statement of a body, those in nested branches and loops included."""
+    for stmt in body:
+        yield stmt
+        for field in ("body", "else_body"):
+            yield from _statements(getattr(stmt, field, None) or ())
+
+
+def _defined(stmt) -> tuple[str, ...]:
+    """The names a plain statement defines."""
+    if isinstance(stmt, Load):
+        return tuple(stmt.names)
+    if isinstance(stmt, (Assign, Accum, Let, Select)):
+        return (stmt.name,)
+    return ()
 
 
 def _straight_line(body) -> Iterator:

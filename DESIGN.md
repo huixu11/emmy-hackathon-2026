@@ -189,6 +189,24 @@ the op itself: 0 for add, 1 for multiply, and `-1e30` for maximum. Emmy uses `-1
 NaN. Accumulators of nested loops are seeded by those loops, at each outer trip.
 `Accum(base=...)` folds into `base` rather than the accumulator itself: `acc = base + value`.
 
+**Accumulators that always hold equal values are computed once.** Emmy repeats online
+softmax's running max and sum for every output column a thread owns: `acc1__c0_0` and
+`acc1__c0_1` are both row 0's max, updated by the same `max` of the same score on every key,
+so `a01` computes 16 exps per key where 8 give the same answer. Neither ptxas nor NVVM merges
+values that are carried around a loop. Before a seeding loop is emitted, its accumulators are
+grouped by identity. The values of one trip are then numbered (`_value_numbers`), on the
+assumption that the members of a group are equal when the trip starts, and a group whose
+members come out with different values is split. When no group splits, the assumption holds
+on every trip, by induction. The first member of a group is the only one computed. It gets
+each trip's new value in a fresh register, because the others still read the old value until
+their own update; their names then stand for its new value, and it moves back into the loop's
+register at the end of the trip. The copies' identical score and exp arithmetic is left to
+ptxas, which merges it within the trip. Results are the same bits, from half the exps. Over
+the 19 attention kernels it changes, time is 0.91x (`v_a_rect`: 58.0 -> 33.4 us,
+`y_s_1x1x256x64`: 111.3 -> 78.5 us, `a01`: 45.5 -> 41.6 us), with one exception:
+`y_s_2x2x64x32`, which reloads 8 query rows from L1 on every key, went 45.8 -> 64.2 us
+(the reference: 78.5 us).
+
 A `multiply` whose only use is the very next `acc <- add(base, p)` (base is the accumulator
 itself when the IR names none) becomes one `fma.rn.f32`. That is what nvcc makes of the
 reference's `acc += a * b`, and of online softmax's `acc * alpha + v * beta`; the second
