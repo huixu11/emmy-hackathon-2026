@@ -192,7 +192,9 @@ NaN. Accumulators of nested loops are seeded by those loops, at each outer trip.
 A `multiply` whose only use is the very next `acc <- add(base, p)` (base is the accumulator
 itself when the IR names none) becomes one `fma.rn.f32`. That is what nvcc makes of the
 reference's `acc += a * b`, and of online softmax's `acc * alpha + v * beta`; the second
-shortens the chain that carries each key's update to the next (`v_a_rect`: 62.1 -> 41.7 us).
+shortens the chain that carries each key's update to the next (`v_a_rect`: 62.1 -> 41.6 us;
+over the 38 kernels it changes, 0.975x the time, though `a01` went 43.7 -> 45.8 us as
+ptxas scheduled the shorter code differently).
 A product by 1.0 (softmax's `one * beta`) is an exact add. Pointwise code keeps separately
 rounded `mul.rn` and `add.rn`, as numpy rounds them.
 
@@ -283,19 +285,19 @@ not part of the compiler.
 | problem | first version | now | reference |
 |---|---|---|---|
 | m01_matmul_512 | 29.4 us | 15.0 us | 15.0 us |
-| a01_attention | | 45.7 us | 74.4 us |
-| a02_attention_128 | 72.4 us | 29.4 us | 29.3 us |
-| r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
+| a01_attention | | 45.8 us | 74.4 us |
+| a02_attention_128 | 72.4 us | 29.4 us | 29.4 us |
+| r02_big_sum | 21.2 us | 8.9 us | 9.0 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
-| w_a_512x64 | 223.8 us | 169.3 us | 354.8 us |
+| w_a_512x64 | 223.8 us | 167.0 us | 354.8 us |
 | w_a_sdpa | | 21.2 us | 49.8 us |
 | v_a_32x64 | | 13.0 us | 23.2 us |
-| v_a_rect | | 41.7 us | 60.1 us |
+| v_a_rect | | 41.6 us | 60.1 us |
 | geometric mean of time / reference, the first 66 problems | 1.12x | 0.91x | 1.00x |
 | geometric mean of time / reference, all 138 with a reference | | 0.85x | 1.00x |
 
-By category, over all 138: pointwise 1.01x, reductions 0.94x, matmul 0.94x, fused 0.89x,
-attention 0.57x. The "now" and "reference" columns come from one run of both compilers, back
+By category, over all 138: pointwise 1.00x, reductions 0.95x, matmul 0.94x, fused 0.89x,
+attention 0.58x. The "now" and "reference" columns come from one run of both compilers, back
 to back: the runner's speed drifts by about 20% between sessions, so figures from different
 sessions do not compare.
 
@@ -318,9 +320,9 @@ What closed the gap, in the order it was found by comparing our SASS with the re
    unrolled whole, and prefetching the next key's loads in the walks that stay rolled.
 7. One fma for online softmax's `acc * alpha + v * beta` (above).
 
-No problem is slower than the reference beyond the noise. The four kernels of about 3 us that
-one full run showed 3-20% slower (`x_p_pow_frac`, `v_p_bcast_col`, `x_r_last_3d`,
-`x_f_div_sum`) measured within 1% of it in three more runs of each.
+No problem is slower than the reference beyond the noise. Kernels of about 3 us jump by
+0.5 us now and then: `x_p_pow_frac` read 1.22x in this run, and 1.00x in four runs of its
+own; others that one run showed 3-20% slower measured within 1% when run again.
 
 ## Testing
 
