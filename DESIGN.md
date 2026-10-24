@@ -10,7 +10,7 @@ python tools/run_problems.py --dir tests/problems   # 134 extra hidden-set-style
 
 Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
 **134/134** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
-Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.85x its time
+Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.84x its time
 over the 147 problems that have a reference time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
@@ -317,23 +317,24 @@ not part of the compiler.
 
 | problem | first version | now | reference |
 |---|---|---|---|
-| m01_matmul_512 | 29.4 us | 15.3 us | 15.0 us |
-| a01_attention | | 45.6 us | 74.4 us |
-| a02_attention_128 | 72.4 us | 29.3 us | 29.3 us |
-| r02_big_sum | 21.2 us | 8.9 us | 10.6 us |
+| m01_matmul_512 | 29.4 us | 15.0 us | 15.1 us |
+| a01_attention | | 41.6 us | 74.4 us |
+| a02_attention_128 | 72.4 us | 29.3 us | 29.4 us |
+| r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
 | f01_rmsnorm | | 3.3 us | 4.8 us |
-| w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
-| w_a_512x64 | 223.8 us | 178.8 us | 354.8 us |
+| w_f_gelu_mlp | 27.3 us | 10.9 us | 17.0 us |
+| w_a_512x64 | 223.8 us | 170.6 us | 354.9 us |
 | w_a_sdpa | | 21.2 us | 49.8 us |
 | v_a_32x64 | | 13.0 us | 23.2 us |
-| v_a_rect | | 58.0 us | 60.1 us |
-| y_a_16x64x512x64 | | 201.3 us | 434.7 us |
+| v_a_rect | | 33.4 us | 60.0 us |
+| x_a_cross | | 27.3 us | 109.2 us |
+| y_a_16x64x512x64 | | 193.2 us | 434.7 us |
 | z_p_pow_frac_big | | 3.1 us | 4.8 us |
-| geometric mean of time / reference, the first 66 problems | 1.12x | 0.91x | 1.00x |
-| geometric mean of time / reference, all 147 with a reference | | 0.85x | 1.00x |
+| geometric mean of time / reference, the first 66 problems | 1.12x | 0.90x | 1.00x |
+| geometric mean of time / reference, all 147 with a reference | | 0.84x | 1.00x |
 
-By category, over all 147: pointwise 0.99x, reductions 0.94x, matmul 0.95x, fused 0.88x,
-attention 0.57x. The "now" and "reference" columns come from one run of both compilers, back
+By category, over all 147: pointwise 0.98x, reductions 0.93x, matmul 0.95x, fused 0.88x,
+attention 0.54x. The "now" and "reference" columns come from one run of both compilers, back
 to back: the runner's speed drifts by about 20% between sessions, so figures from different
 sessions do not compare.
 
@@ -357,17 +358,21 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 7. One fma for online softmax's `acc * alpha + v * beta` (above).
 8. Scalar constants as immediates, and `pow` specialized to its exponent (under Memory and
    f32 math). A load fewer on the critical path took `f01_rmsnorm` from 4.8 to 3.3 us.
+9. Accumulators that always hold equal values computed once (under Loops): half the exps
+   in most attention kernels (`v_a_rect`: 58.0 -> 33.4 us).
 
 No problem is slower than the reference beyond the noise. Kernels of about 3 us jump by
-0.5 us now and then: `x_p_scalar_bcast` and `v_p_where` read 1.19x in this run, and 1.00x
-when run again; `m01`, whose PTX is unchanged, read 15.0 us in the run before.
+0.5 us now and then: `x_p_outer_bcast` and `x_m_bmm_bcast` read 1.18x and 1.16x in this run,
+and 1.00x when run again.
 
 Attention kernels with few blocks (`v_a_rect` runs 4 blocks of 256 threads) are bound by the
 latency of each key's trip, and ptxas's schedule of that trip moves their time by tens of
 percent on a one-instruction change. Knowing the scale as an immediate instead of a loaded
 value, with the same instruction count, took `v_a_rect` from 41.6 to 58.0 us and
-`y_s_1x4x128x64` from 37.5 to 41.6 us, and `y_a_16x64x512x64` from 340.7 to 201.3 us. Over all
-problems the geometric mean stayed at 0.85x.
+`y_s_1x4x128x64` from 37.5 to 41.6 us, and `y_a_16x64x512x64` from 340.7 to 201.3 us; over all
+problems the geometric mean stayed at 0.85x. Moving each inner product down to just before
+the softmax update that uses it, a source order ptxas might follow, was tried and dropped: it
+helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x64`.
 
 ## Testing
 
