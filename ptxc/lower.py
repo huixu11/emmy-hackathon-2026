@@ -19,7 +19,7 @@ from emmy.compiler.ir.stmt.leaves import Accum, Assign, Load, SelectBranch
 
 from .errors import CompileError
 from .facts import Fact
-from .fmath import emit_elementwise
+from .fmath import ONE, emit_elementwise
 from .index import ZERO, IndexCompiler, Lin
 from .kernel import Kernel
 from .ptx import Mark, PtxBuilder, address, f32_imm, is_register, render_module, vector
@@ -161,11 +161,11 @@ class KernelLowering:
             i += 1
 
     def _is_fma_pair(self, stmt, after) -> bool:
-        """`p = multiply(a, b)` directly followed by `acc <- add(acc, p)`, with p used nowhere else:
-        one fma (a single rounding, as nvcc contracts the reference's `acc += a * b`)."""
+        """`p = multiply(a, b)` directly followed by `acc <- add(base, p)` (base is acc itself
+        when the IR names none), with p used nowhere else: one fma, a single rounding, as nvcc
+        contracts the reference's `acc += a * b` and online softmax's `acc * alpha + v * beta`."""
         return (isinstance(stmt, Assign) and stmt.op.name == "multiply"
-                and isinstance(after, Accum) and after.op.name == "add"
-                and after.base is None and after.value == stmt.name
+                and isinstance(after, Accum) and after.op.name == "add" and after.value == stmt.name
                 and self._name_counts[stmt.name] == 2)  # its definition and this one use
 
     def _fma(self, product, acc) -> None:
@@ -174,7 +174,11 @@ class KernelLowering:
         if dst is None:
             raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
         a, c = (self._operand(name) for name in product.args)
-        self.b.emit("fma.rn.f32", dst, a, c, dst)
+        base = self._operand(acc.base) if acc.base else dst
+        if ONE in (a, c):  # softmax's `one * beta`: exactly an add
+            self.b.emit("add.rn.f32", dst, base, c if a == ONE else a)
+        else:
+            self.b.emit("fma.rn.f32", dst, a, c, base)
 
     # ---- launch geometry -------------------------------------------------------------------
 
