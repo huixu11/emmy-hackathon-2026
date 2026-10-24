@@ -52,6 +52,8 @@ _LN2 = _f32(math.log(2.0))
 ZERO = f32_imm(0.0)
 ONE = f32_imm(1.0)
 NAN = "0f7FFFFFFF"
+NEG_INF = "0fFF800000"
+POS_INF = "0f7F800000"
 
 
 def _regs(b: PtxBuilder, n: int) -> list[str]:
@@ -310,11 +312,14 @@ def _pow(b: PtxBuilder, dst: str, x: str, y: str) -> None:
     # |x|^y = exp(y * log|x|) in general. An integral exponent up to 64 in magnitude (x**3,
     # x**-1, ...) multiplies by repeated squaring instead: a handful of correctly rounded
     # products, far closer than log/exp. Negative x takes the sign of an odd integral y and is
-    # NaN for a fractional one; y == 0 gives 1 for every x, as in C's powf.
+    # NaN for a fractional one; y == 0 and x == 1 give 1 for every x and y, as in C's powf.
+    known = _imm_value(y)
+    if known is not None and math.isfinite(known):
+        _pow_known(b, dst, x, known)
+        return
     ax, lg, t, general, ay, y_trunc, power, base, inv, mag, half, half_trunc, res = _regs(b, 13)
     n, bit = b.reg("b32"), b.reg("b32")
-    integral, in_range, use_int, take, negative_y, odd, x_neg, flip, nan, y_zero = (
-        b.reg("pred") for _ in range(10))
+    integral, in_range, use_int, take, negative_y, odd, x_neg, flip, nan = (b.reg("pred") for _ in range(9))
     b.emit("abs.f32", ax, x)
     _log(b, lg, ax)
     b.emit("mul.rn.f32", t, y, lg)
@@ -347,10 +352,88 @@ def _pow(b: PtxBuilder, dst: str, x: str, y: str) -> None:
     b.emit("mov.f32", res, mag)
     b.emit("neg.f32", res, mag, guard=flip)
     b.emit("and.pred", nan, x_neg, "!" + integral)
+    b.emit("setp.ne.and.f32", nan, x, NEG_INF, nan)  # (-inf)^y is +inf or +0, not NaN
     b.emit("mov.f32", res, NAN, guard=nan)
-    b.emit("setp.eq.f32", y_zero, y, ZERO)
-    b.emit("mov.f32", res, ONE, guard=y_zero)
+    unit, y_inf = b.reg("pred"), b.reg("pred")
+    b.emit("setp.eq.f32", y_inf, ay, POS_INF)
+    b.emit("setp.eq.and.f32", unit, ax, ONE, y_inf)  # (-1)^+-inf is 1
+    b.emit("setp.eq.or.f32", unit, x, ONE, unit)  # 1^y is 1, for y = NaN too
+    b.emit("setp.eq.or.f32", unit, y, ZERO, unit)
+    b.emit("mov.f32", res, ONE, guard=unit)
     b.emit("mov.f32", dst, res)
+
+
+def _pow_known(b: PtxBuilder, dst: str, x: str, y: float) -> None:
+    """pow(x, y) for an exponent the kernel fixes (a constant of the graph): only the path that
+    y takes, about a tenth of the instructions. Special values follow C's powf as above."""
+    if y == 0:
+        b.emit("mov.f32", dst, ONE)  # for every x, NaN included
+        return
+    if y == int(y) and abs(y) <= _POW_INT_LIMIT:
+        # x itself through the squarings, so an odd power keeps its sign; the products come in
+        # the order of the general path, so results are the same bits.
+        b.emit("rcp.rn.f32" if y < 0 else "mov.f32", dst, _int_power(b, x, int(abs(y))))
+        return
+    ax = b.reg("f32")
+    b.emit("abs.f32", ax, x)
+    if y * 2 == int(y * 2) and abs(y) <= _POW_INT_LIMIT:
+        # y = +-(k + 1/2): |x|^k * sqrt|x|, all correctly rounded steps (x**1.5, x**-0.5)
+        mag = b.reg("f32")
+        b.emit("sqrt.rn.f32", mag, ax)
+        if abs(y) > 1:
+            prod = b.reg("f32")
+            b.emit("mul.rn.f32", prod, _int_power(b, ax, int(abs(y))), mag)
+            mag = prod
+        if y < 0:
+            inv = b.reg("f32")
+            b.emit("rcp.rn.f32", inv, mag)
+            mag = inv
+    else:
+        lg, t, mag = _regs(b, 3)
+        _log(b, lg, ax)
+        b.emit("mul.rn.f32", t, f32_imm(y), lg)
+        _exp(b, mag, t)
+    if y == int(y):  # an integer past the squaring limit
+        if int(y) % 2:  # odd: x's sign
+            xs, bits = b.reg("b32"), b.reg("b32")
+            b.emit("mov.b32", xs, x)
+            b.emit("and.b32", xs, xs, "0x80000000")
+            b.emit("mov.b32", bits, mag)
+            b.emit("or.b32", bits, bits, xs)
+            b.emit("mov.b32", dst, bits)
+        else:
+            b.emit("mov.f32", dst, mag)
+        return
+    neg, nan = b.reg("pred"), b.reg("pred")
+    b.emit("setp.lt.f32", neg, x, ZERO)
+    b.emit("setp.ne.and.f32", nan, x, NEG_INF, neg)  # negative x is NaN, but (-inf)^y is not
+    b.emit("selp.f32", dst, NAN, mag, nan)
+
+
+def _int_power(b: PtxBuilder, x: str, n: int) -> str:
+    """x^n for n >= 1 by repeated squaring: the operand holding it."""
+    power, base = None, x
+    while True:
+        if n & 1:
+            if power is None:
+                power = base
+            else:
+                prod = b.reg("f32")
+                b.emit("mul.rn.f32", prod, power, base)
+                power = prod
+        n >>= 1
+        if not n:
+            return power
+        square = b.reg("f32")
+        b.emit("mul.rn.f32", square, base, base)
+        base = square
+
+
+def _imm_value(operand: str) -> float | None:
+    """The value of an f32 immediate operand (0f3FC00000 -> 1.5); None for a register."""
+    if operand.startswith("0f") and len(operand) == 10:
+        return _from_bits(int(operand[2:], 16))
+    return None
 
 
 # Comparisons and logic on f32 masks (nonzero is true), producing 1.0 or 0.0 like C's (float)(a < b).

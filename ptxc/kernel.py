@@ -1,9 +1,10 @@
 """Load one Kernel IR file: the kernel body, the buffers it touches, and its launch contract.
 
 The typed body comes from emmy's own deserializer (`Graph.from_dict`). Buffer shapes and dtypes
-come from the plain graph level of the same json. The parameter order and the launch geometry
-come from the problem's meta.json next to the IR, which is the contract: emmy may reorder
-arguments between pipeline stages, so the IR node's `inputs` list is only a fallback.
+come from the plain graph level of the same json, and so do the values of scalar constants
+(ConstantOp nodes: an epsilon, a scale, an exponent). The parameter order and the launch
+geometry come from the problem's meta.json next to the IR, which is the contract: emmy may
+reorder arguments between pipeline stages, so the IR node's `inputs` list is only a fallback.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ class Kernel:
     grid: int | None               # blocks and threads per block of the 1-D launch in meta.json,
     block: int | None              # None when there is no meta.json
     dynamic_smem_bytes: int | None  # the launch's dynamic shared memory, None when unknown
+    constants: dict[str, float]    # one-element buffers whose value the graph fixes
 
     @property
     def launched_threads(self) -> int | None:
@@ -74,7 +76,25 @@ def load_kernel(ir_path: Path) -> Kernel:
     unknown = [p for p in params if p not in buffers]
     if unknown:
         raise CompileError(f"parameters {unknown} name no buffer of the graph")
-    return Kernel(op.name, op.body, params, buffers, grid, block, smem)
+    constants = _constants(raw, buffers, launch)
+    return Kernel(op.name, op.body, params, buffers, grid, block, smem, constants)
+
+
+def _constants(raw: dict, buffers: dict[str, Buffer], launch: dict | None) -> dict[str, float]:
+    """Buffer name -> value of each one-element f32 ConstantOp. The launch still passes the
+    buffer; a value that meta.json gives differently is left to be read at run time."""
+    data = {a["name"]: a.get("data") for a in (launch or {}).get("args", [])}
+    constants = {}
+    for node in raw["nodes"].values():
+        value = node.get("op_fields", {}).get("value")
+        if node.get("op") != "ConstantOp" or len(node["outputs"]) != 1 or isinstance(value, bool):
+            continue
+        name = node["outputs"][0]["name"]
+        buf = buffers[name]
+        if (isinstance(value, (int, float)) and buf.dtype == "f32" and math.prod(buf.shape) == 1
+                and data.get(name) in (None, [value])):
+            constants[name] = float(value)
+    return constants
 
 
 def _launch(meta_path: Path, entry: str) -> dict | None:

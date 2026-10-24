@@ -604,6 +604,15 @@ class KernelLowering:
 
     def visit_Load(self, load) -> None:
         _require_f32(load.dtype, load.input)
+        value = self.kernel.constants.get(load.input)
+        if value is not None:  # a constant of the graph: an immediate, like a Let
+            for name in load.names:
+                bound = self.scopes.find(name)
+                if isinstance(bound, str) and is_register(bound):  # a name written in place
+                    self.b.emit("mov.f32", bound, f32_imm(value))
+                else:
+                    self.scopes.define(name, f32_imm(value))
+            return
         if self._prefetched is not None and all(self.scopes.find(n) is None for n in load.names):
             regs = self._prefetched.get((id(load), tuple(self._trips)))
             if regs is not None:  # loaded by the trip before
