@@ -1,0 +1,116 @@
+{
+  "inputs": [
+    "k",
+    "q",
+    "v"
+  ],
+  "outputs": [
+    "scaled_dot_product_attention"
+  ],
+  "nodes": {
+    "k": {
+      "op": "InputOp",
+      "op_fields": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "k",
+          "shape": [
+            1,
+            4,
+            128,
+            64
+          ],
+          "dtype": "f32"
+        }
+      ]
+    },
+    "q": {
+      "op": "InputOp",
+      "op_fields": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "q",
+          "shape": [
+            1,
+            4,
+            128,
+            64
+          ],
+          "dtype": "f32"
+        }
+      ]
+    },
+    "scaled_dot_product_attention_scale": {
+      "op": "ConstantOp",
+      "op_fields": {
+        "name": "scaled_dot_product_attention_scale",
+        "value": 0.125,
+        "context_value": null,
+        "load_ops": [],
+        "source_path": null,
+        "source_parts": [],
+        "source_shape": null,
+        "source_dtype": null,
+        "source_graph": null
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "scaled_dot_product_attention_scale",
+          "shape": [
+            1
+          ],
+          "dtype": "f32"
+        }
+      ]
+    },
+    "v": {
+      "op": "InputOp",
+      "op_fields": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "v",
+          "shape": [
+            1,
+            4,
+            128,
+            64
+          ],
+          "dtype": "f32"
+        }
+      ]
+    },
+    "scaled_dot_product_attention": {
+      "op": "KernelOp",
+      "op_fields": {
+        "body": [
+          "Tile(axes=(Axis(name='a0', extent=Dim(4), window=None), Axis(name='a1', extent=Dim(128), window=None), Axis(name='a6', extent=Dim(64), window=None)), body=(Load(names=('in0',), input='scaled_dot_product_attention_scale', index=(Literal(value=0, dtype='int'),), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Loop(axis=Axis(name='a2', extent=Dim(128), window=None), body=(Loop(axis=Axis(name='a3', extent=Dim(64), window=None), body=(Load(names=('in2',), input='q', index=(Literal(value=0, dtype='int'), Var(name='a0'), Var(name='a1'), Var(name='a3')), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Load(names=('in1',), input='k', index=(Literal(value=0, dtype='int'), Var(name='a0'), Var(name='a2'), Var(name='a3')), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v0', op=ElementwiseImpl('multiply'), args=('in1', 'in2'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Accum(name='acc0', value='v0', op=ElementwiseImpl('add'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4), axes=('a3',), base=None)), unroll=False, seed=True), Assign(name='v1', op=ElementwiseImpl('multiply'), args=('acc0', 'in0'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Let(name='one', value=Literal(value=1.0, dtype='float'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__gn', op=ElementwiseImpl('maximum'), args=('acc1', 'v1'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__dg', op=ElementwiseImpl('subtract'), args=('acc1', 'v1__gn'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__alpha', op=ElementwiseImpl('exp'), args=('v1__dg',), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__dg_o', op=ElementwiseImpl('subtract'), args=('v1', 'v1__gn'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__beta', op=ElementwiseImpl('exp'), args=('v1__dg_o',), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__acc3_sa', op=ElementwiseImpl('multiply'), args=('acc3', 'v1__alpha'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__acc3_sb', op=ElementwiseImpl('multiply'), args=('one', 'v1__beta'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Accum(name='acc3', value='v1__acc3_sb', op=ElementwiseImpl('add'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4), axes=('a2',), base='v1__acc3_sa'), Assign(name='v1__acc5__sum_sa', op=ElementwiseImpl('multiply'), args=('acc5__sum', 'v1__alpha'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Load(names=('in7',), input='v', index=(Literal(value=0, dtype='int'), Var(name='a0'), Var(name='a2'), Var(name='a6')), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='v1__acc5__sum_sb', op=ElementwiseImpl('multiply'), args=('in7', 'v1__beta'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Accum(name='acc5__sum', value='v1__acc5__sum_sb', op=ElementwiseImpl('add'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4), axes=('a2',), base='v1__acc5__sum_sa'), Accum(name='acc1', value='v1', op=ElementwiseImpl('maximum'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4), axes=('a2',), base=None)), unroll=False, seed=True), Assign(name='v6', op=ElementwiseImpl('reciprocal'), args=('acc3',), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Assign(name='acc5', op=ElementwiseImpl('multiply'), args=('acc5__sum', 'v6'), dtype=DataType(name='f32', np=dtype('float32'), nbytes=4)), Write(output='scaled_dot_product_attention', index=(Literal(value=0, dtype='int'), Var(name='a0'), Var(name='a1'), Var(name='a6')), values=('acc5',), value_dtype=DataType(name='f32', np=dtype('float32'), nbytes=4), atomic=False, swizzle='NONE')), block_threads=None, aux_threads=0, raster_axes=None, raster_group=None, raster_orient='m')"
+        ],
+        "name": "k_sdpa_386058",
+        "zero_delegated": [],
+        "serial": []
+      },
+      "inputs": [
+        "scaled_dot_product_attention_scale",
+        "q",
+        "k",
+        "v"
+      ],
+      "outputs": [
+        {
+          "name": "scaled_dot_product_attention",
+          "shape": [
+            1,
+            4,
+            128,
+            64
+          ],
+          "dtype": "f32"
+        }
+      ]
+    }
+  }
+}

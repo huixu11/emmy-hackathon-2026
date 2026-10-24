@@ -4,7 +4,7 @@
 > pip install emmy-ml==0.3.11 numpy requests
 > python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json > out.ptx
 > python tools/run_problems.py                        # all 15 open problems: 15/15 pass
-> python tools/run_problems.py --dir tests/problems   # 106 extra variants: 106/106 pass
+> python tools/run_problems.py --dir tests/problems   # 125 extra variants: 125/125 pass
 > ```
 >
 > The compiler is `compile.py` plus the `ptxc/` package. [DESIGN.md](DESIGN.md) explains how
