@@ -5,13 +5,13 @@
 ```bash
 python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > out.ptx
 python tools/run_problems.py                     # the 15 open problems on the GPU runner
-python tools/run_problems.py --dir tests/problems   # 125 extra hidden-set-style problems
+python tools/run_problems.py --dir tests/problems   # 134 extra hidden-set-style problems
 ```
 
 Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
-**125/125** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
+**134/134** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
 Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.85x its time
-over the 138 problems that have a reference time (see [Performance](#performance)).
+over the 147 problems that have a reference time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
 nothing goes through Emmy's renderer, `nvcc`, or another compiler.
@@ -29,7 +29,7 @@ ptx.py      render    .version/.target, shared declarations, .entry signature, .
 
 | module | role |
 |---|---|
-| `kernel.py` | Load the IR, the buffer table and the launch contract (`arg_order`, grid x block, `smem_bytes`). |
+| `kernel.py` | Load the IR, the buffer table, scalar constants and the launch contract (`arg_order`, grid x block, `smem_bytes`). |
 | `lower.py` | Translate statements: launch geometry, loops, memory, barriers, cross-thread combines. |
 | `index.py` | Compile integer index expressions, predicates and addresses. |
 | `facts.py` | Track a known range and divisor for every index register. |
@@ -203,6 +203,7 @@ rounded `mul.rn` and `add.rn`, as numpy rounds them.
 | IR | PTX |
 |---|---|
 | `Load` of an input | `ld.global.nc.f32`, or `.v2`/`.v4` when the IR groups 2 or 4 names |
+| `Load` of a scalar constant | no load: the immediate, as for a `Let` (below) |
 | `Load` of an output or shared array | `ld.global.f32` / `ld.shared.f32` |
 | `Write` | `st.global` / `st.shared`, `.v2`/`.v4` for a grouped write |
 | `Write (atomic)` | one `red.global.add.f32` per value |
@@ -213,6 +214,13 @@ rounded `mul.rn` and `add.rn`, as numpy rounds them.
 
 Global addresses are `base + mul.wide.s32(index, 4)`. Shared addresses are 32-bit:
 `mad.lo.s32 index, 4, sh_array`.
+
+Scalars of the torch expression (an epsilon, a scale, `mean`'s count, the 1.5 of `x ** 1.5`)
+reach the kernel as one-element buffers that the graph fills from a `ConstantOp`. The launch
+still passes them, but their value is in the IR, so a `Load` of one becomes the immediate
+(`0f3FC00000`) instead of a memory read. Values can then fold: `reciprocal` of a count is
+done by ptxas, and `pow` picks its method from the exponent (under f32 math). A value that
+meta.json gives differently from the IR is left to be read at run time.
 
 After lowering, `vectorize.py` merges runs of scalar loads through one base register at
 consecutive offsets into `.v2`/`.v4` loads. m01's unrolled inner product reads one column of
@@ -260,13 +268,20 @@ sweep of each op's input range.
 | `tanh` | `x + x^3 P(x^2)` below 0.55 (polynomial fitted for relative error), `1 - 2/(e^2|x| + 1)` above | < 4e-7 |
 | `erf` | `x P(x^2)` below 1, `1 - exp(-x^2) R(|x|)` on [1, 4], then +-1 | < 4e-7 |
 | `log` | fdlibm's reduction to [sqrt(2)/2, sqrt(2)) and its coefficients | < 4e-7 |
-| `pow` | repeated squaring for integral \|y\| <= 64, else `exp(y log|x|)`; C `powf`'s sign/NaN/zero rules | < 4e-7 integral, ~6e-7 fractional |
+| `pow` | repeated squaring for integral \|y\| <= 64, `x^k sqrt(x)` for y = k + 1/2, else `exp(y log|x|)`; C `powf`'s sign/NaN/zero/inf rules | < 2.6e-7 for integral \|y\| <= 7 and half-integral \|y\| <= 2.5; 2.6e-6 at y = 64; through exp and log (fractional y, integers past 64) 1.4e-6 to 8.8e-6, growing with y log x; x over [6e-6, 1.6e5] |
 | `sigmoid`, `silu` | compositions of the above in numpy's operation order | < 4e-7 |
 | `gelu`, `gelu_tanh` | the same; the formula's `1 + erf` cancels in the far negative tail | abs. error < 5e-7 |
 | `sin`, `cos` | cephes' `sinf`: reduce by the nearest even multiple of pi/4 (pi/4 in three f32 parts, one fma each), then a polynomial for sin or cos picked by the multiple, which also sets the sign | < 2.4e-7 up to \|x\| = 1e4 |
 | comparisons, `where`, `&&`/`\|\|` | 1.0/0.0 masks: `set.<cmp>.f32.f32`, `selp` | exact |
 
 For scale, one f32 ulp is 6e-8 to 1.2e-7 of the value, so 4e-7 is 3 to 7 ulp.
+
+`pow`'s exponent is nearly always a constant of the graph (`x ** 3`, `x ** 1.5`). Then only
+the method for that exponent is emitted, with its fix-ups for negative x, zeros and infinities.
+`x ** 3` is two multiplies, and `x ** 1.5` is `x * sqrt(x)`, within 1 ulp where
+`exp(1.5 log x)` was off by up to 24. About 8 PTX instructions per element replace 100: a
+run-time exponent computes every method and selects one. On 2^18 elements `x ** 3` and
+`x ** 2.2` take 3.0 us against the reference's 4.8 us.
 
 These are all the f32 ops Emmy's own CUDA renderer accepts (`op_to_expr`), so every
 elementwise op a traced problem can contain is covered.
@@ -284,20 +299,23 @@ not part of the compiler.
 
 | problem | first version | now | reference |
 |---|---|---|---|
-| m01_matmul_512 | 29.4 us | 15.0 us | 15.0 us |
-| a01_attention | | 45.8 us | 74.4 us |
-| a02_attention_128 | 72.4 us | 29.4 us | 29.4 us |
-| r02_big_sum | 21.2 us | 8.9 us | 9.0 us |
+| m01_matmul_512 | 29.4 us | 15.3 us | 15.0 us |
+| a01_attention | | 45.6 us | 74.4 us |
+| a02_attention_128 | 72.4 us | 29.3 us | 29.3 us |
+| r02_big_sum | 21.2 us | 8.9 us | 10.6 us |
+| f01_rmsnorm | | 3.3 us | 4.8 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
-| w_a_512x64 | 223.8 us | 167.0 us | 354.8 us |
+| w_a_512x64 | 223.8 us | 178.8 us | 354.8 us |
 | w_a_sdpa | | 21.2 us | 49.8 us |
 | v_a_32x64 | | 13.0 us | 23.2 us |
-| v_a_rect | | 41.6 us | 60.1 us |
+| v_a_rect | | 58.0 us | 60.1 us |
+| y_a_16x64x512x64 | | 201.3 us | 434.7 us |
+| z_p_pow_frac_big | | 3.1 us | 4.8 us |
 | geometric mean of time / reference, the first 66 problems | 1.12x | 0.91x | 1.00x |
-| geometric mean of time / reference, all 138 with a reference | | 0.85x | 1.00x |
+| geometric mean of time / reference, all 147 with a reference | | 0.85x | 1.00x |
 
-By category, over all 138: pointwise 1.00x, reductions 0.95x, matmul 0.94x, fused 0.89x,
-attention 0.58x. The "now" and "reference" columns come from one run of both compilers, back
+By category, over all 147: pointwise 0.99x, reductions 0.94x, matmul 0.95x, fused 0.88x,
+attention 0.57x. The "now" and "reference" columns come from one run of both compilers, back
 to back: the runner's speed drifts by about 20% between sessions, so figures from different
 sessions do not compare.
 
@@ -319,16 +337,25 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 6. The attention loop rules (under Loops): vector loads for streamed rows, short key walks
    unrolled whole, and prefetching the next key's loads in the walks that stay rolled.
 7. One fma for online softmax's `acc * alpha + v * beta` (above).
+8. Scalar constants as immediates, and `pow` specialized to its exponent (under Memory and
+   f32 math). A load fewer on the critical path took `f01_rmsnorm` from 4.8 to 3.3 us.
 
 No problem is slower than the reference beyond the noise. Kernels of about 3 us jump by
-0.5 us now and then: `x_p_pow_frac` read 1.22x in this run, and 1.00x in four runs of its
-own; others that one run showed 3-20% slower measured within 1% when run again.
+0.5 us now and then: `x_p_scalar_bcast` and `v_p_where` read 1.19x in this run, and 1.00x
+when run again; `m01`, whose PTX is unchanged, read 15.0 us in the run before.
+
+Attention kernels with few blocks (`v_a_rect` runs 4 blocks of 256 threads) are bound by the
+latency of each key's trip, and ptxas's schedule of that trip moves their time by tens of
+percent on a one-instruction change. Knowing the scale as an immediate instead of a loaded
+value, with the same instruction count, took `v_a_rect` from 41.6 to 58.0 us and
+`y_s_1x4x128x64` from 37.5 to 41.6 us, and `y_a_16x64x512x64` from 340.7 to 201.3 us. Over all
+problems the geometric mean stayed at 0.85x.
 
 ## Testing
 
 * `tools/run_problems.py` runs `submit.py`'s exact check (compile with `compile.py`, assemble,
   run under meta.json's launch, compare with `expected.npz`) over many problems.
-* `tests/problems/` holds 125 problems generated by `tools/generate.py` from
+* `tests/problems/` holds 134 problems generated by `tools/generate.py` from
   `tests/expressions_variants.py`: new shapes and ops in all five categories. They include odd
   sizes, 3-D and outer broadcasts, every renderable elementwise op (`sin`/`cos` included),
   composite activations (mish, elu, hardswish), unpinned (multi-block, atomic), column,
@@ -343,6 +370,11 @@ own; others that one run showed 3-20% slower measured within 1% when run again.
 * The fourth batch (`y_*`) holds the attention shapes the two loop rules above were worked out
   on: both layouts, 16 to 512 keys, 32 to 512 threads per block. Among them was a 256-key SDPA
   that ran 1.7x slower than the reference before the row-streaming rule.
+* The fifth batch (`z_*`) takes powers by constants: `x ** 2`, `** -2`, `** -0.5`, `** 0.5`,
+  `** 2.2` and `** 3` (the last three on 2^18 elements), the mean of `x ** 1.5`, and RMS and
+  L2 norms written with `x.pow(2)`. `tools/pow_sweep.py` runs 27 exponents on the GPU, with
+  zeros, infinities, NaN and subnormals among the inputs, and checks `pow`'s special cases
+  against C's `pow`.
 
 ## Limits
 

@@ -1,0 +1,64 @@
+{
+ "id": "z_p_rsqrt_pow",
+ "code": "(torch.abs(torch.randn(4096)) + 0.001) ** -0.5",
+ "rtol": 1e-06,
+ "atol": 0,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "pow_1"
+ ],
+ "kernels": [
+  {
+   "node": "pow_1",
+   "entry": "k_pow_1_pointwise",
+   "arg_order": [
+    "add_c1",
+    "x",
+    "pow_1"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.001
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "pow_1",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}
