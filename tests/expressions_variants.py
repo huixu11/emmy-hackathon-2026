@@ -302,3 +302,25 @@ OPEN += [
     _sdpa(1, 4, 128, 64), _sdpa(2, 2, 32, 64), _sdpa(1, 8, 64, 32), _sdpa(1, 1, 256, 64),
     _sdpa(2, 2, 32, 32), _sdpa(4, 2, 32, 64), _sdpa(2, 4, 16, 64), _sdpa(1, 2, 48, 64), _sdpa(2, 2, 64, 32),
 ]
+
+# ---- batch 5: powers with a constant exponent (integral, half-integral, general), alone and fused ----
+OPEN += [
+    dict(id="z_p_pow2", code="torch.randn(4096) ** 2",
+         ref=lambda x: [f32(f64(x) ** 2)], rtol=1e-6, atol=0),
+    dict(id="z_p_pow_neg2", code="torch.randn(4096) ** -2",
+         ref=lambda x: [f32(f64(x) ** -2)], rtol=1e-6, atol=0),
+    dict(id="z_p_rsqrt_pow", code="(torch.abs(torch.randn(4096)) + 0.001) ** -0.5",
+         ref=lambda x: [f32((f64(np.abs(x) + np.float32(0.001))) ** -0.5)], rtol=1e-6, atol=0),
+    dict(id="z_p_sqrt_big", code="torch.abs(torch.randn(262144)) ** 0.5",
+         ref=lambda x: [f32(np.abs(f64(x)) ** 0.5)], rtol=1e-6, atol=0),
+    dict(id="z_p_pow_frac_big", code="torch.abs(torch.randn(262144)) ** 2.2",
+         ref=lambda x: [f32(np.abs(f64(x)) ** 2.2)], rtol=1e-5, atol=1e-6),
+    dict(id="z_p_cube_big", code="torch.randn(262144) ** 3",
+         ref=lambda x: [f32(f64(x) ** 3)], rtol=1e-6, atol=1e-7),
+    dict(id="z_r_pow_mean", code="torch.abs(torch.randn(128, 512)).pow(1.5).mean(-1)",
+         ref=lambda x: [f32((np.abs(f64(x)) ** 1.5).mean(-1))], rtol=1e-4, atol=1e-5),
+    dict(id="z_f_rmsnorm_pow", code="x = torch.randn(64, 256); x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + 1e-6)",
+         ref=lambda x: [f32(f64(x) / np.sqrt((f64(x) ** 2).mean(-1, keepdims=True) + 1e-6))], rtol=1e-4, atol=1e-5),
+    dict(id="z_f_l2_pow", code="x = torch.randn(32, 128); x / (x.pow(2).sum(-1, keepdim=True) ** 0.5 + 1e-6)",
+         ref=lambda x: [f32(f64(x) / (np.sqrt((f64(x) ** 2).sum(-1, keepdims=True)) + 1e-6))], rtol=1e-4, atol=1e-5),
+]

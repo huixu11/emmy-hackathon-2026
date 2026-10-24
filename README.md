@@ -4,8 +4,11 @@
 > pip install emmy-ml==0.3.11 numpy requests
 > python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json > out.ptx
 > python tools/run_problems.py                        # all 15 open problems: 15/15 pass
-> python tools/run_problems.py --dir tests/problems   # 125 extra variants: 125/125 pass
+> python tools/run_problems.py --dir tests/problems   # 134 extra variants: 134/134 pass
+> python tools/run_problems.py --iters 100           # median of 100 launches, as DESIGN.md reports
 > ```
+>
+> Without `--iters`, the times shown are one cold launch each, as `submit.py` times them.
 >
 > The compiler is `compile.py` plus the `ptxc/` package. [DESIGN.md](DESIGN.md) explains how
 > each IR statement becomes PTX, and why. The task description from the organizers follows.
