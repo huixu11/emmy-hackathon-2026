@@ -10,7 +10,7 @@ python tools/run_problems.py --dir tests/problems   # 125 extra hidden-set-style
 
 Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
 **125/125** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
-Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.86x its time
+Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.85x its time
 over the 138 problems that have a reference time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
@@ -189,8 +189,11 @@ the op itself: 0 for add, 1 for multiply, and `-1e30` for maximum. Emmy uses `-1
 NaN. Accumulators of nested loops are seeded by those loops, at each outer trip.
 `Accum(base=...)` folds into `base` rather than the accumulator itself: `acc = base + value`.
 
-A `multiply` whose only use is the very next `acc <- add(acc, p)` becomes one `fma.rn.f32`.
-That is what nvcc makes of the reference's `acc += a * b`. Pointwise code keeps separately
+A `multiply` whose only use is the very next `acc <- add(base, p)` (base is the accumulator
+itself when the IR names none) becomes one `fma.rn.f32`. That is what nvcc makes of the
+reference's `acc += a * b`, and of online softmax's `acc * alpha + v * beta`; the second
+shortens the chain that carries each key's update to the next (`v_a_rect`: 62.1 -> 41.7 us).
+A product by 1.0 (softmax's `one * beta`) is an exact add. Pointwise code keeps separately
 rounded `mul.rn` and `add.rn`, as numpy rounds them.
 
 ## Memory
@@ -280,18 +283,19 @@ not part of the compiler.
 | problem | first version | now | reference |
 |---|---|---|---|
 | m01_matmul_512 | 29.4 us | 15.0 us | 15.0 us |
-| a01_attention | | 43.7 us | 74.4 us |
+| a01_attention | | 45.7 us | 74.4 us |
 | a02_attention_128 | 72.4 us | 29.4 us | 29.3 us |
 | r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
-| w_a_512x64 | 223.8 us | 178.6 us | 354.8 us |
+| w_a_512x64 | 223.8 us | 169.3 us | 354.8 us |
 | w_a_sdpa | | 21.2 us | 49.8 us |
-| v_a_32x64 | | 12.9 us | 23.2 us |
-| geometric mean of time / reference, the first 66 problems | 1.12x | 0.92x | 1.00x |
-| geometric mean of time / reference, all 138 with a reference | | 0.86x | 1.00x |
+| v_a_32x64 | | 13.0 us | 23.2 us |
+| v_a_rect | | 41.7 us | 60.1 us |
+| geometric mean of time / reference, the first 66 problems | 1.12x | 0.91x | 1.00x |
+| geometric mean of time / reference, all 138 with a reference | | 0.85x | 1.00x |
 
 By category, over all 138: pointwise 1.01x, reductions 0.94x, matmul 0.94x, fused 0.89x,
-attention 0.59x. The "now" and "reference" columns come from one run of both compilers, back
+attention 0.57x. The "now" and "reference" columns come from one run of both compilers, back
 to back: the runner's speed drifts by about 20% between sessions, so figures from different
 sessions do not compare.
 
@@ -312,9 +316,11 @@ What closed the gap, in the order it was found by comparing our SASS with the re
    exp, with the same accuracy.
 6. The attention loop rules (under Loops): vector loads for streamed rows, short key walks
    unrolled whole, and prefetching the next key's loads in the walks that stay rolled.
+7. One fma for online softmax's `acc * alpha + v * beta` (above).
 
-The largest remaining gaps are pointwise kernels of 3 us, where the launch dominates and
-0.5 us decides (`x_p_pow_frac` 1.20x, `v_p_bcast_col` 1.17x), and `v_a_rect` (1.03x).
+No problem is slower than the reference beyond the noise. The four kernels of about 3 us that
+one full run showed 3-20% slower (`x_p_pow_frac`, `v_p_bcast_col`, `x_r_last_3d`,
+`x_f_div_sum`) measured within 1% of it in three more runs of each.
 
 ## Testing
 
