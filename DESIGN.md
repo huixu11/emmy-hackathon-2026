@@ -10,7 +10,7 @@ python tools/run_problems.py --dir tests/problems   # 125 extra hidden-set-style
 
 Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
 **125/125** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
-Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.90x its time
+Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.86x its time
 over the 138 problems that have a reference time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
@@ -154,7 +154,7 @@ ptxas never merges shared loads across trips. A long loop that is not inside ano
 unrolled here, as NVVM does for the reference, because ptxas may leave it rolled.
 
 Attention kernels walk the keys in an outer loop around one inner product per query row, and
-two more rules come from measuring them in both layouts the IR uses:
+three more rules come from measuring them in both layouts the IR uses:
 
 * **Inner loops that stream rows are unrolled here.** In SDPA, `k[..., key, d]` is read along
   `d` and changes with every key. ptxas cannot hoist those loads out of the key loop and keeps
@@ -166,6 +166,18 @@ two more rules come from measuring them in both layouts the IR uses:
   previous key's softmax update still runs, as NVVM does (`v_a_32x64`: 25.3 -> 13.0 us). An
   SDPA walk stays rolled: its trips already load in vectors, and unrolled it ran up to 1.9x
   slower.
+* **A walk that stays rolled prefetches.** A trip cannot start its dot products until its
+  key's row of k (or column of kt) and of v arrive. So each trip first issues the next key's
+  loads into a second set of registers, then computes with the values the trip before
+  loaded, and finally moves the new ones over (the next key is clamped to the last, so the
+  final trip's loads stay in bounds). The loads arrive while the previous key's dot products
+  and softmax update run. ptxas cannot undo this the way it re-sinks loads moved up inside
+  a trip: the values cross the loop's back edge. It applies to a top-level loop with
+  constant bounds whose inner loops are all unrolled here, so that every load site reads one
+  fixed address per trip. Such a loop unrolls its inner loops whatever their size: with the
+  loads a trip ahead, the stalls that made ptxas's own schedule of them better are gone. Over
+  the 24 attention kernels this changes, time fell to 0.36x to 0.97x (`a01`: 76.4 -> 43.7 us
+  against the reference's 74.4; `y_s_1x2x48x64`: 43.7 -> 19.1 us against 25.2).
 
 Real loops are bottom-tested: one entry test (folded away when the bounds prove it), then
 one compare and branch per iteration. The trips always run in order, so every accumulator
@@ -268,14 +280,20 @@ not part of the compiler.
 | problem | first version | now | reference |
 |---|---|---|---|
 | m01_matmul_512 | 29.4 us | 15.0 us | 15.0 us |
+| a01_attention | | 43.7 us | 74.4 us |
 | a02_attention_128 | 72.4 us | 29.4 us | 29.3 us |
-| r02_big_sum | 21.2 us | 8.9 us | 8.9 us |
+| r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
-| w_a_512x64 | 223.8 us | 213.7 us | 352.9 us |
-| w_a_sdpa | | 39.5 us | 49.8 us |
+| w_a_512x64 | 223.8 us | 178.6 us | 354.8 us |
+| w_a_sdpa | | 21.2 us | 49.8 us |
 | v_a_32x64 | | 12.9 us | 23.2 us |
-| geometric mean of time / reference, the first 66 problems | 1.12x | 0.93x | 1.00x |
-| geometric mean of time / reference, all 138 with a reference | | 0.90x | 1.00x |
+| geometric mean of time / reference, the first 66 problems | 1.12x | 0.92x | 1.00x |
+| geometric mean of time / reference, all 138 with a reference | | 0.86x | 1.00x |
+
+By category, over all 138: pointwise 1.01x, reductions 0.94x, matmul 0.94x, fused 0.89x,
+attention 0.59x. The "now" and "reference" columns come from one run of both compilers, back
+to back: the runner's speed drifts by about 20% between sessions, so figures from different
+sessions do not compare.
 
 Two problems have no reference time: NVRTC rejects `v_p_log`'s reference source, and the
 reference gets `x_p_fma_5000` (`x * y + z`, checked with zero tolerance) wrong, because nvcc
@@ -292,12 +310,11 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 5. A cheaper `exp`: clamping the input removes the special-case checks around the correction,
    and `.ftz` removes ptxas's subnormal handling around `ex2`. That is about half the SASS per
    exp, with the same accuracy.
-6. The two attention loop rules (under Loops): vector loads for streamed rows, and short key
-   walks unrolled whole.
+6. The attention loop rules (under Loops): vector loads for streamed rows, short key walks
+   unrolled whole, and prefetching the next key's loads in the walks that stay rolled.
 
-The largest remaining gaps are attention kernels: a 48-key SDPA (1.7x), `v_a_rect` (1.14x,
-where CUDA's `expf` takes two fewer instructions than ours per call) and the one-block
-`x_a_long_kv` (1.08x).
+The largest remaining gaps are pointwise kernels of 3 us, where the launch dominates and
+0.5 us decides (`x_p_pow_frac` 1.20x, `v_p_bcast_col` 1.17x), and `v_a_rect` (1.03x).
 
 ## Testing
 

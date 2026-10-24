@@ -34,7 +34,8 @@ _GLOBAL_ALIGN = 16  # buffer base alignment; the IR's own v4 accesses rely on at
 # Unrolling limits, in IR statements. The enclosing budget was measured on attention kernels:
 # when unrolling the inner loops would grow the loop around them past it (several 64-trip
 # inner products per trip), ptxas does better with them rolled (it unrolls and hoists itself),
-# unless they stream rows that only unrolling here turns into vector loads (_streams_rows).
+# unless they stream rows that only unrolling here turns into vector loads (_streams_rows), or
+# the loop around them prefetches (_prefetch_plan).
 _UNROLL_BUDGET = 1024           # a fully unrolled loop the IR marks unroll
 _IMPLICIT_UNROLL_BUDGET = 512   # a fully unrolled loop the IR does not mark
 _ENCLOSING_UNROLL_BUDGET = 384  # the body of a loop whose inner loops unroll without the IR asking
@@ -70,6 +71,9 @@ class KernelLowering:
         # would grow past _ENCLOSING_UNROLL_BUDGET that way.
         self._unroll_room = True
         self._in_loop = False  # inside the body of a loop emitted as a real loop
+        self._trips: list[tuple[str, int]] = []  # (variable, trip) of the unrolled copies being emitted
+        # Load site -> registers that already hold its values (see _prefetch_plan).
+        self._prefetched: dict[tuple, list[str]] | None = None
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -286,9 +290,7 @@ class KernelLowering:
         size = sum(1 for _ in _straight_line(body))
         if trips is not None and trips[0] == trips[1]:
             n = trips[0]
-            budget = _UNROLL_BUDGET if unroll else _IMPLICIT_UNROLL_BUDGET
-            wanted = unroll or (self._unroll_room and n <= _FULL_UNROLL_TRIPS)
-            if n == 1 or (not has_loop and wanted and n * size <= budget):
+            if self._unrolls(n, size, has_loop, unroll):
                 self._unrolled(var, start, step.const, n, body)
                 return
             # A short top-level loop around inner loops, such as attention's walk over 16 to 64
@@ -316,6 +318,12 @@ class KernelLowering:
             factor = 4 if constant and not has_loop and 4 * size <= _PARTIAL_UNROLL_BUDGET else 1
             self._counted_loop(var, start, end, step, body, factor, uniform=False)
 
+    def _unrolls(self, n: int, size: int, has_loop: bool, unroll: bool) -> bool:
+        """Whether a loop of n trips on every thread, `size` statements, becomes n copies."""
+        budget = _UNROLL_BUDGET if unroll else _IMPLICIT_UNROLL_BUDGET
+        wanted = unroll or (self._unroll_room and n <= _FULL_UNROLL_TRIPS)
+        return n == 1 or (not has_loop and wanted and n * size <= budget)
+
     def _reads_shared(self, body) -> bool:
         return any(isinstance(node, Load) and node.input in self.shared for node in _walk(body))
 
@@ -339,7 +347,11 @@ class KernelLowering:
     def _unrolled(self, var: str, start: Lin, step: int, n: int, body) -> None:
         for k in range(n):
             self.b.comment(f"{var}: trip {k} of {n}")
-            self._copy(var, Lin(start.reg, start.const + k * step), body, annotate=k == 0)
+            self._trips.append((var, k))
+            try:
+                self._copy(var, Lin(start.reg, start.const + k * step), body, annotate=k == 0)
+            finally:
+                self._trips.pop()
 
     def _at_most_once(self, var: str, start: Lin, end: Lin, body) -> None:
         enter = self.idx.compare("lt", start, end)
@@ -359,11 +371,94 @@ class KernelLowering:
         self._unroll_room = _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET or _streams_rows(var, body)
         self._in_loop = True
         try:
-            self._emit_counted_loop(var, start, end, step, body, factor, uniform)
+            last = None
+            if factor == 1 and uniform and not saved[1]:
+                # Prefetching is worth unrolling the inner loops for, whatever their size: it
+                # removes the stalls that made ptxas's own schedule of them better (a01:
+                # 76.4 -> 43.7 us). Only when it then applies, so no loop unrolls without it.
+                room = self._unroll_room
+                self._unroll_room = True
+                last = self._prefetch_plan(var, start, end, step, body)
+                if last is None:
+                    self._unroll_room = room
+            self._emit_counted_loop(var, start, end, step, body, factor, uniform, last)
         finally:
             self._unroll_room, self._in_loop = saved
 
-    def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool) -> None:
+    def _prefetch_plan(self, var: str, start: Lin, end: Lin, step: Lin, body) -> int | None:
+        """The value of `var` on the last trip, when the loop's loads are prefetched.
+
+        Attention's walk over the keys reads each key's row of k (or column of kt) and of v,
+        and the trip's work cannot start until they arrive. So each trip first loads the next
+        key's values into a second set of registers, then computes with the values the trip
+        before loaded, and finally moves the new ones over. The loads then arrive while the
+        previous key's dot products and softmax update run (24 attention kernels measured
+        0.36x to 0.97x the time). This needs a top-level loop with constant bounds and every
+        inner loop unrolled here, so that each load site reads one fixed address per trip.
+        """
+        if start.reg is not None or end.reg is not None or step.reg is not None or step.const <= 0:
+            return None
+        n = -(-(end.const - start.const) // step.const)
+        if n < 2:
+            return None
+        for stmt in _straight_line(body):
+            if isinstance(stmt, StridedLoop):
+                return None
+            if isinstance(stmt, Loop):
+                inner_size = sum(1 for _ in _straight_line(stmt.body))
+                nested = any(isinstance(node, (Loop, StridedLoop)) for node in _walk(stmt) if node is not stmt)
+                if not self._unrolls(stmt.axis.extent.as_static(), inner_size, nested, stmt.unroll):
+                    return None
+        if not any(isinstance(node, Load) and self._streamed(node, var) for node in _walk(body)):
+            return None
+        return start.const + (n - 1) * step.const
+
+    def _streamed(self, load, var: str) -> bool:
+        """A load from a read-only input whose address changes with `var`."""
+        if load.input in self.shared or self.kernel.buffers[load.input].is_output:
+            return False
+        return any(var in _names_used(e) for e in load.index)
+
+    def _prefetch_loads(self, var: str, value: Lin, body) -> dict[tuple, list[str]]:
+        """Load every streamed site of `body` with `var` bound to `value`: site -> registers.
+        A site is a Load statement in one unrolled copy, keyed like _trips."""
+        sites: dict[tuple, list[str]] = {}
+        with self.scopes.nested(hoist=self.b.mark()):
+            self.scopes.define(var, value)
+            self._prefetch_walk(body, var, sites, {})
+        return sites
+
+    def _prefetch_walk(self, body, var: str, sites: dict, loaded: dict) -> None:
+        for stmt in body:
+            if isinstance(stmt, Loop):  # unrolled in the body too (_prefetch_plan)
+                for k in range(stmt.axis.extent.as_static()):
+                    self._trips.append((stmt.axis.name, k))
+                    try:
+                        with self.scopes.nested(hoist=self.b.mark()):
+                            self.scopes.define(stmt.axis.name, Lin(None, k))
+                            self._prefetch_walk(stmt.body, var, sites, loaded)
+                    finally:
+                        self._trips.pop()
+            elif isinstance(stmt, Load) and self._streamed(stmt, var):
+                names = sorted({n for e in stmt.index for n in _names_used(e)})
+                if not all(self.scopes.find(n) is not None for n in names):
+                    continue  # an index the body computes itself: loaded there as usual
+                # Sites with the same index under the same values read one address for every
+                # value of var (attention's rows all read k[key, d]), so they share registers,
+                # alike in every trip. An address match alone could hold for one value only.
+                same = (stmt.input, repr(stmt.index), tuple((n, repr(self.scopes.lookup(n))) for n in names))
+                if same not in loaded:
+                    flat = self._flat(stmt.input, stmt.index)
+                    regs, pos = [], 0
+                    for width in _vector_widths(len(stmt.names)):
+                        _, addr = self._address(stmt.input, Lin(flat.reg, flat.const + pos))
+                        regs += self._load(f"ld.global.nc{_vec(width)}.f32", addr, width)
+                        pos += width
+                    loaded[same] = regs
+                sites[id(stmt), tuple(self._trips)] = loaded[same]
+
+    def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool,
+                           last: int | None = None) -> None:
         counter = self.b.reg("b32")
         self.b.emit("mov.s32", counter, self.idx.operand(start))
         if step.reg is None and step.const > 0:
@@ -382,11 +477,17 @@ class KernelLowering:
         if factor == 1 or not uniform:
             enter = self.idx.compare("lt", start, end) if factor == 1 else None
             self._loop_iterations(var, counter, self.idx.operand(end), self.idx.operand(step), 1, body,
-                                  test_entry=enter is not True)
+                                  test_entry=enter is not True,
+                                  prefetch=(start, last) if last is not None and factor == 1 else None)
 
-    def _loop_iterations(self, var: str, counter: str, bound, step, factor: int, body, test_entry: bool) -> None:
+    def _loop_iterations(self, var: str, counter: str, bound, step, factor: int, body, test_entry: bool,
+                         prefetch: tuple[Lin, int] | None = None) -> None:
         """while counter < bound: `factor` copies of the body; counter += factor * step.
-        Loop-invariant index arithmetic goes to the preheader, ahead of the entry test."""
+        Loop-invariant index arithmetic goes to the preheader, ahead of the entry test.
+        With `prefetch` = (first, last value of var), the body's streamed loads come from the
+        trip before (_prefetch_plan)."""
+        if prefetch:  # ahead of the preheader mark, which what the body hoists may use
+            current = self._prefetch_loads(var, prefetch[0], body)
         preheader = self.b.mark()
         head, done = self.b.labels("loop", "loop_end")
         if test_entry:
@@ -396,8 +497,28 @@ class KernelLowering:
         self.b.place(head)
         with self.scopes.nested(hoist=preheader):  # one iteration: what depends on the counter
             self.idx.depth[counter] = self.scopes.current.depth
-            for k in range(factor):  # factor > 1 only with a constant step
-                self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0)
+            if prefetch:
+                # The next trip's value of var, held at the last one so the loads stay in bounds.
+                following = self.b.reg("b32")
+                self.b.emit("add.s32", following, counter, step)
+                self.b.emit("min.s32", following, following, prefetch[1])
+                self.idx.assume(following, Fact(self.idx.fact(Lin(counter)).lo, prefetch[1],
+                                                self.idx.fact(Lin(counter)).div))
+                self.idx.depth[following] = self.scopes.current.depth
+                upcoming = self._prefetch_loads(var, Lin(following), body)
+                self._prefetched = current
+            try:
+                for k in range(factor):  # factor > 1 only with a constant step
+                    self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0)
+            finally:
+                self._prefetched = None
+            if prefetch:
+                moved: set[str] = set()
+                for site, regs in current.items():
+                    for reg, value in zip(regs, upcoming[site]):
+                        if reg not in moved:
+                            moved.add(reg)
+                            self.b.emit("mov.f32", reg, value)
         again = self.b.reg("pred")
         self.b.emit("add.s32", counter, counter, step * factor if factor > 1 else step)
         self.b.emit("setp.lt.s32", again, counter, bound)
@@ -479,6 +600,12 @@ class KernelLowering:
 
     def visit_Load(self, load) -> None:
         _require_f32(load.dtype, load.input)
+        if self._prefetched is not None and all(self.scopes.find(n) is None for n in load.names):
+            regs = self._prefetched.get((id(load), tuple(self._trips)))
+            if regs is not None:  # loaded by the trip before
+                for name, reg in zip(load.names, regs):
+                    self.scopes.define(name, reg)
+                return
         flat = self._flat(load.input, load.index)
         # Inputs are never written by the kernel: read them through the non-coherent cache and
         # reuse a value already loaded from the same address.
