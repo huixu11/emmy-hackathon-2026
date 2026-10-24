@@ -10,8 +10,8 @@ python tools/run_problems.py --dir tests/problems   # 125 extra hidden-set-style
 
 Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
 **125/125** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
-Kernel speed is on par with Emmy's own CUDA path, at a geometric mean of 0.95x its time over
-all 66 problems (see [Performance](#performance)).
+Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.90x its time
+over the 138 problems that have a reference time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
 nothing goes through Emmy's renderer, `nvcc`, or another compiler.
@@ -272,7 +272,14 @@ not part of the compiler.
 | r02_big_sum | 21.2 us | 8.9 us | 8.9 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.1 us |
 | w_a_512x64 | 223.8 us | 213.7 us | 352.9 us |
-| geometric mean of time / reference, 66 problems | 1.12x | 0.95x | 1.00x |
+| w_a_sdpa | | 39.5 us | 49.8 us |
+| v_a_32x64 | | 12.9 us | 23.2 us |
+| geometric mean of time / reference, the first 66 problems | 1.12x | 0.93x | 1.00x |
+| geometric mean of time / reference, all 138 with a reference | | 0.90x | 1.00x |
+
+Two problems have no reference time: NVRTC rejects `v_p_log`'s reference source, and the
+reference gets `x_p_fma_5000` (`x * y + z`, checked with zero tolerance) wrong, because nvcc
+contracts it into one fma.
 
 What closed the gap, in the order it was found by comparing our SASS with the reference's:
 
@@ -285,6 +292,12 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 5. A cheaper `exp`: clamping the input removes the special-case checks around the correction,
    and `.ftz` removes ptxas's subnormal handling around `ex2`. That is about half the SASS per
    exp, with the same accuracy.
+6. The two attention loop rules (under Loops): vector loads for streamed rows, and short key
+   walks unrolled whole.
+
+The largest remaining gaps are attention kernels: a 48-key SDPA (1.7x), `v_a_rect` (1.14x,
+where CUDA's `expf` takes two fewer instructions than ours per call) and the one-block
+`x_a_long_kv` (1.08x).
 
 ## Testing
 
