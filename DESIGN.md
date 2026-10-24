@@ -154,7 +154,7 @@ ptxas never merges shared loads across trips. A long loop that is not inside ano
 unrolled here, as NVVM does for the reference, because ptxas may leave it rolled.
 
 Attention kernels walk the keys in an outer loop around one inner product per query row, and
-two more rules come from measuring them in both layouts the IR uses:
+three more rules come from measuring them in both layouts the IR uses:
 
 * **Inner loops that stream rows are unrolled here.** In SDPA, `k[..., key, d]` is read along
   `d` and changes with every key. ptxas cannot hoist those loads out of the key loop and keeps
@@ -166,6 +166,18 @@ two more rules come from measuring them in both layouts the IR uses:
   previous key's softmax update still runs, as NVVM does (`v_a_32x64`: 25.3 -> 13.0 us). An
   SDPA walk stays rolled: its trips already load in vectors, and unrolled it ran up to 1.9x
   slower.
+* **A walk that stays rolled prefetches.** A trip cannot start its dot products until its
+  key's row of k (or column of kt) and of v arrive. So each trip first issues the next key's
+  loads into a second set of registers, then computes with the values the trip before
+  loaded, and finally moves the new ones over (the next key is clamped to the last, so the
+  final trip's loads stay in bounds). The loads arrive while the previous key's dot products
+  and softmax update run. ptxas cannot undo this the way it re-sinks loads moved up inside
+  a trip: the values cross the loop's back edge. It applies to a top-level loop with
+  constant bounds whose inner loops are all unrolled here, so that every load site reads one
+  fixed address per trip. Such a loop unrolls its inner loops whatever their size: with the
+  loads a trip ahead, the stalls that made ptxas's own schedule of them better are gone. Over
+  the 24 attention kernels this changes, time fell to 0.36x to 0.97x (`a01`: 76.4 -> 43.7 us
+  against the reference's 74.4; `y_s_1x2x48x64`: 43.7 -> 19.1 us against 25.2).
 
 Real loops are bottom-tested: one entry test (folded away when the bounds prove it), then
 one compare and branch per iteration. The trips always run in order, so every accumulator
