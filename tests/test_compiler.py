@@ -20,13 +20,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from ptxc import PTX_LIMIT, CompileError, compile_file  # noqa: E402
 from ptxc import dtypes as dt  # noqa: E402
 from ptxc.cse import eliminate_common_subexpressions  # noqa: E402
-from ptxc.ptx import Instr  # noqa: E402
+from ptxc.ptx import Instr, PtxBuilder  # noqa: E402
 
 PROBLEM_DIRS = [REPO / "problems", REPO / "tests/problems", REPO / "tests/problems_packed"]
 KERNELS = sorted(ir for d in PROBLEM_DIRS if d.exists() for ir in d.glob("*/*.ir.json"))
@@ -124,6 +126,31 @@ class DataTypes(unittest.TestCase):
         self.assertIn("mul.rn.f64", exact)
         self.assertNotIn("cvt.rn.f32.f64", exact)
 
+    def test_f64_reads_in_loops_split_between_cvt_and_integers(self):
+        """In a loop 2 f64 reads in 5 stay cvt and 3 are rounded in integer instructions (the
+        f64 unit and the ALUs run side by side); straight-line code reads with cvt alone."""
+        looped = compile_file(str(next(p for p in KERNELS if p.parent.name == "c_f64_m01_matmul_512")))
+        self.assertGreater(looped.count("cvt.rn.f32.f64"), 0)
+        self.assertGreater(looped.count("shf.r.wrap.b32"), looped.count("cvt.rn.f32.f64"))
+        straight = compile_file(str(next(p for p in KERNELS if p.parent.name == "d_p_f64_mul")))
+        self.assertIn("cvt.rn.f32.f64", straight)
+        self.assertNotIn("shf.r.wrap.b32", straight)
+
+    def test_integer_f64_reads_round_as_cvt(self):
+        """dtypes._read_f64's integer form, run instruction by instruction in numpy, against
+        numpy's float32(float64): random bit patterns (NaN and inf among them), exact f32 ties,
+        both ends of f32's range and the subnormals between."""
+        b = PtxBuilder()
+        b.f64_reads = 1  # 2 reads in 5 stay cvt, this one is the integer form
+        dt._read_f64(b, "%f0", "%fd0", integer=True)
+        x = _f64_samples(np.random.default_rng(5), 50_000)
+        got = _interpret(b.flat(), {"%fd0": x.view(np.uint64)})["%f0"].astype(np.uint32).view(np.float32)
+        with np.errstate(over="ignore", invalid="ignore"):
+            want = x.astype(np.float32)
+        nan = np.isnan(want)
+        self.assertTrue(np.isnan(got[nan]).all())
+        np.testing.assert_array_equal(got[~nan].view(np.uint32), want[~nan].view(np.uint32))
+
     def test_f64_states_cross_lanes_in_two_halves(self):
         """shfl.sync moves 32 bits: an f64 running max goes over as two halves."""
         ir = next(p for p in KERNELS if p.parent.name == "c_f64_f02_row_softmax")
@@ -139,6 +166,68 @@ class DataTypes(unittest.TestCase):
         self.assertIs(dt.common([dt.I32, dt.F64]), dt.F64)
         with self.assertRaises(CompileError):
             dt.dtype("f8e4m3")
+
+
+def _f64_samples(rng, n: int) -> np.ndarray:
+    """f64 values that exercise a conversion to f32 at every exponent and rounding case."""
+    u = np.uint64
+    bits = rng.integers(0, 2**64 - 1, n, dtype=np.uint64, endpoint=True)
+    edge = (rng.integers(760, 906, n, dtype=np.uint64) << u(52)) | (bits & u(0x800FFFFFFFFFFFFF))  # 2^-263..2^-117
+    parts = [bits.view(np.float64), edge.view(np.float64), rng.standard_normal(n)]
+    for lo, hi in ((-151, -124), (-20, 20), (126, 129)):
+        f = (np.exp2(rng.uniform(lo, hi, n)) * rng.choice([-1, 1], n)).astype(np.float32)
+        g = np.nextafter(f, np.float32(np.inf), dtype=np.float32)
+        tie = f.astype(np.float64) / 2 + g.astype(np.float64) / 2
+        parts += [tie, np.nextafter(tie, -np.inf), np.nextafter(tie, np.inf)]
+    parts.append(np.array([0.0, -0.0, np.inf, -np.inf, np.nan, 2.0**-149, 2.0**-150, 2.0**-126, 2.0**128, 5e-324]))
+    with np.errstate(over="ignore"):
+        return np.concatenate(parts)
+
+
+def _interpret(lines, regs: dict) -> dict:
+    """Run straight-line integer and f32 PTX elementwise over numpy arrays: the instructions
+    dtypes._read_f64 emits. 32-bit registers are held in uint64 arrays."""
+    m32 = np.uint64(0xFFFFFFFF)
+
+    def val(op):
+        if op in regs:
+            return regs[op]
+        return np.uint64(int(op[2:], 16) if op.startswith("0f") else int(op, 0))
+
+    def f32(v):
+        return np.asarray(v, np.uint64).astype(np.uint32).view(np.float32)
+
+    for ins in lines:
+        op, (d, *src) = ins.opcode, ins.operands
+        if op == "mov.b64" and d.startswith("{"):
+            lo, hi = d[1:-1].split(", ")
+            regs[lo], regs[hi] = val(src[0]) & m32, val(src[0]) >> np.uint64(32)
+            continue
+        if op == "mov.b64":
+            lo, hi = src[0][1:-1].split(", ")
+            regs[d] = (val(hi) << np.uint64(32)) | val(lo)
+            continue
+        a = [val(s) for s in src]
+        if op == "shf.r.wrap.b32":
+            r = (((a[1] << np.uint64(32)) | a[0]) >> (a[2] & np.uint64(31))) & m32
+        elif op == "shf.l.wrap.b32":
+            n = a[2] & np.uint64(31)
+            r = ((a[1] << n) | (a[0] >> (np.uint64(32) - n))) & m32
+        elif op == "lop3.b32":
+            r = np.uint64(0)
+            for i in range(8):
+                if a[3] >> np.uint64(i) & np.uint64(1):
+                    r = r | ((a[0] if i & 4 else ~a[0]) & (a[1] if i & 2 else ~a[1]) & (a[2] if i & 1 else ~a[2]))
+            r = r & m32
+        elif op == "mul.rn.f32":
+            r = (f32(a[0]) * f32(a[1])).view(np.uint32).astype(np.uint64)
+        else:
+            r = {"and.b32": lambda: a[0] & a[1], "or.b32": lambda: a[0] | a[1], "add.u32": lambda: (a[0] + a[1]) & m32,
+                 "max.u32": lambda: np.maximum(a[0], a[1]), "min.u32": lambda: np.minimum(a[0], a[1]),
+                 "shr.u32": lambda: a[0] >> a[1], "setp.lt.u32": lambda: a[0] < a[1],
+                 "setp.gt.u64": lambda: a[0] > a[1], "selp.b32": lambda: np.where(a[2], a[0], a[1])}[op]()
+        regs[d] = r
+    return regs
 
 
 class CommonSubexpressions(unittest.TestCase):

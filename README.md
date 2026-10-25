@@ -26,7 +26,9 @@
 >   integer `//` and `%` round toward minus infinity, as torch does (Emmy's own CUDA truncates).
 >   Every open problem also runs with all its inputs in f16, bf16, f64 or i32, and every
 >   attention and reduction problem in f16 and f64 (`c_*`). f64 is computed in f32 by default,
->   as Emmy's own CUDA computes it: sm_89 GPUs run f64 at 1/64 of the f32 rate.
+>   as Emmy's own CUDA computes it: sm_89 GPUs run f64 at 1/64 of the f32 rate, and its
+>   `cvt.rn.f32.f64` too, so in loops three f64 reads in five are rounded to f32 in integer
+>   instructions instead, to the same bits (subnormals, inf and NaN included).
 >   `python compile.py --exact-f64 ...` (or `PTXC_EXACT_F64=1`) computes in f64 instead.
 > * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
 >   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
@@ -43,8 +45,9 @@
 > * **Optimizations**, each measured (DESIGN.md): trip-count unrolling, vector loads and stores,
 >   division by constants without a divide, `.maxntid`, next-key prefetch and one fma per update
 >   in attention, accumulators that always hold equal values computed once, scalar constants as
->   immediates, `pow` specialized to its exponent, and a common-subexpression pass for what
->   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`).
+>   immediates, `pow` specialized to its exponent, a common-subexpression pass for what
+>   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), and f64 reads split between the f64
+>   unit and the integer ALUs.
 > * **Exact f32 math**: explicit `.rn` rounding, so pointwise results match numpy bit for bit; our
 >   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
 > * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.

@@ -44,6 +44,7 @@ _ENCLOSING_UNROLL_BUDGET = 384  # the body of a loop whose inner loops unroll wi
 _FULL_UNROLL_TRIPS = 64         # most trips unrolled completely without the IR asking
 _PARTIAL_UNROLL_BUDGET = 128    # one iteration of a partially unrolled loop
 _OUTER_UNROLL_BUDGET = 16384    # a short top-level loop with inner loops, unrolled whole
+_READ_ONCE = 64                 # f64 values a prefetching loop loads once for all its trips
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,7 +77,9 @@ class KernelLowering(TensorCores):
         # Whether a loop may be unrolled without the IR asking; False inside a loop whose body
         # would grow past _ENCLOSING_UNROLL_BUDGET that way.
         self._unroll_room = True
-        self._in_loop = False  # inside the body of a loop emitted as a real loop
+        # Inside the body of a loop emitted as a real loop. f64 reads there use the f64 unit and
+        # the integer ALUs both (dtypes._read_f64).
+        self._in_loop = False
         self._trips: list[tuple[str, int]] = []  # (variable, trip) of the unrolled copies being emitted
         # Load site -> registers that already hold its values (see _prefetch_plan).
         self._prefetched: dict[tuple, tuple[list[str], dt.DType]] | None = None
@@ -178,11 +181,12 @@ class KernelLowering(TensorCores):
     def _is_fma_pair(self, stmt, after) -> bool:
         """`p = multiply(a, b)` directly followed by `acc <- add(base, p)` (base is acc itself
         when the IR names none), with p used nowhere else: one fma, a single rounding, as nvcc
-        contracts the reference's `acc += a * b` and online softmax's `acc * alpha + v * beta`."""
+        contracts the reference's `acc += a * b` and online softmax's `acc * alpha + v * beta`.
+        f64 held in f32 (the default) counts as f32: Emmy's CUDA multiplies it as a float."""
         return (isinstance(stmt, Assign) and stmt.op.name == "multiply"
                 and isinstance(after, Accum) and after.op.name == "add" and after.value == stmt.name
-                and dt.dtype(stmt.dtype) == dt.dtype(after.dtype) == dt.F32
-                and all(self._type(a) == dt.F32 for a in stmt.args)
+                and dt.is_f32_float(dt.dtype(stmt.dtype)) and dt.is_f32_float(dt.dtype(after.dtype))
+                and all(dt.is_f32_float(self._type(a)) for a in stmt.args)
                 and self._name_counts[stmt.name] == 2)  # its definition and this one use
 
     def _fma(self, product, acc) -> None:
@@ -458,16 +462,17 @@ class KernelLowering(TensorCores):
             return False
         return any(var in _names_used(e) for e in load.index)
 
-    def _prefetch_loads(self, var: str, value: Lin, body) -> dict[tuple, list[str]]:
+    def _prefetch_loads(self, var: str, value: Lin, body, fixed: dict | None = None) -> dict[tuple, list[str]]:
         """Load every streamed site of `body` with `var` bound to `value`: site -> registers.
-        A site is a Load statement in one unrolled copy, keyed like _trips."""
+        A site is a Load statement in one unrolled copy, keyed like _trips. With `fixed`, the
+        f64 sites that read the same address on every trip go there, loaded this once."""
         sites: dict[tuple, list[str]] = {}
         with self.scopes.nested(hoist=self.b.mark()):
             self.scopes.define(var, value)
-            self._prefetch_walk(body, var, sites, {})
+            self._prefetch_walk(body, var, sites, {}, fixed)
         return sites
 
-    def _prefetch_walk(self, body, var: str, sites: dict, loaded: dict) -> None:
+    def _prefetch_walk(self, body, var: str, sites: dict, loaded: dict, fixed: dict | None = None) -> None:
         for stmt in body:
             if isinstance(stmt, Loop):  # unrolled in the body too (_prefetch_plan)
                 for k in range(stmt.axis.extent.as_static()):
@@ -475,10 +480,10 @@ class KernelLowering(TensorCores):
                     try:
                         with self.scopes.nested(hoist=self.b.mark()):
                             self.scopes.define(stmt.axis.name, Lin(None, k))
-                            self._prefetch_walk(stmt.body, var, sites, loaded)
+                            self._prefetch_walk(stmt.body, var, sites, loaded, fixed)
                     finally:
                         self._trips.pop()
-            elif isinstance(stmt, Load) and self._streamed(stmt, var):
+            elif isinstance(stmt, Load) and (self._streamed(stmt, var) or self._read_once(stmt, var, fixed)):
                 names = sorted({n for e in stmt.index for n in _names_used(e)})
                 if not all(self.scopes.find(n) is not None for n in names):
                     continue  # an index the body computes itself: loaded there as usual
@@ -495,7 +500,19 @@ class KernelLowering(TensorCores):
                         regs += self._load(f"ld.global.nc{_vec(width)}.{d.mem}", addr, width, d)
                         pos += width
                     loaded[same] = (regs, d)
-                sites[id(stmt), tuple(self._trips)] = loaded[same]
+                (sites if self._streamed(stmt, var) else fixed)[id(stmt), tuple(self._trips)] = loaded[same]
+
+    def _read_once(self, load, var: str, fixed: dict | None) -> bool:
+        """An f64 read held in f32 whose address is the same on every trip of the loop over var
+        (attention's q row, under `for key`): it costs a conversion each time it is loaded,
+        and ptxas does not always hoist it (it did not for c_f64_a01_attention once most reads
+        were converted in integer instructions), so the first trip's prefetch loads it for all
+        of them, up to _READ_ONCE values per loop."""
+        if fixed is None or self._buffer_dtype(load.input) is not dt.F64_AS_F32:
+            return False
+        if load.input in self.shared or self.kernel.buffers[load.input].is_output:
+            return False
+        return len({r for regs, _ in fixed.values() for r in regs}) + len(load.names) <= _READ_ONCE
 
     def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool,
                            last: int | None = None) -> None:
@@ -527,7 +544,8 @@ class KernelLowering(TensorCores):
         With `prefetch` = (first, last value of var), the body's streamed loads come from the
         trip before (_prefetch_plan)."""
         if prefetch:  # ahead of the preheader mark, which what the body hoists may use
-            current = self._prefetch_loads(var, prefetch[0], body)
+            fixed: dict[tuple, tuple[list[str], dt.DType]] = {}
+            current = self._prefetch_loads(var, prefetch[0], body, fixed)
         preheader = self.b.mark()
         head, done = self.b.labels("loop", "loop_end")
         if test_entry:
@@ -546,7 +564,7 @@ class KernelLowering(TensorCores):
                                                 self.idx.fact(Lin(counter)).div))
                 self.idx.depth[following] = self.scopes.current.depth
                 upcoming = self._prefetch_loads(var, Lin(following), body)
-                self._prefetched = current
+                self._prefetched = {**current, **fixed}
             try:
                 for k in range(factor):  # factor > 1 only with a constant step
                     self._copy(var, Lin(counter, k * step if k else 0), body, annotate=k == 0)
@@ -826,7 +844,7 @@ class KernelLowering(TensorCores):
     def _load(self, opcode: str, addr: str, width: int, d: dt.DType = dt.F32) -> list[str]:
         regs = [self.b.reg(d.mem_reg) for _ in range(width)]
         self.b.emit(opcode, vector(regs), addr)
-        return dt.from_memory(self.b, regs, d)
+        return dt.from_memory(self.b, regs, d, integer=self._in_loop)
 
     def visit_Write(self, write) -> None:
         """buf[i] = (v0, v1, ...) as vector stores, or one red.add per value when atomic; each

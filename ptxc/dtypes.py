@@ -14,11 +14,12 @@ is exactly the correctly rounded 16-bit result (the f32 sum or product of two 16
 exact, or too far from a rounding boundary to matter), which is what torch computes.
 
 An f64 value is held in an f32 register by default, as emmy's own CUDA does (it declares every
-f64 local `float`): it is read with `cvt.rn.f32.f64`, computed in f32 and written back with
-`cvt.f64.f32`. f64 arithmetic runs at 1/64 of the f32 rate on the GPUs sm_89 PTX is for (every
-Ada part, and the RTX 5090 runner), and emmy's IR keeps the sums and maxima of f64 kernels in
-f32 anyway. `exact_f64(True)` holds f64 values in f64 registers instead, for a GPU with fast f64
-(A100, H100: 1/2 rate) or a kernel that needs the precision.
+f64 local `float`): it is read as `cvt.rn.f32.f64` reads it (most reads in integer instructions,
+see _read_f64), computed in f32 and written back with `cvt.f64.f32`. f64 arithmetic runs at 1/64
+of the f32 rate on the GPUs sm_89 PTX is for (every Ada part, and the RTX 5090 runner), and
+emmy's IR keeps the sums and maxima of f64 kernels in f32 anyway. `exact_f64(True)` holds f64
+values in f64 registers instead, for a GPU with fast f64 (A100, H100: 1/2 rate) or a kernel that
+needs the precision.
 """
 
 from __future__ import annotations
@@ -91,6 +92,11 @@ def dtype(d) -> DType:
     if found is None:
         raise CompileError(f"dtype {name} is not supported")
     return F64_AS_F32 if found is F64 and not _EXACT_F64[0] else found
+
+
+def is_f32_float(d: DType) -> bool:
+    """f32, or f64 held in f32: a float computed at f32 precision with no rounding of its own."""
+    return d in (F32, F64_AS_F32)
 
 
 def common(dtypes: list[DType]) -> DType:
@@ -207,8 +213,9 @@ def move(b: PtxBuilder, dst: str, value: str, d: DType) -> None:
 
 # ---- memory ----------------------------------------------------------------------------------
 
-def from_memory(b: PtxBuilder, regs: list[str], d: DType) -> list[str]:
-    """Values of dtype d from the registers a load of d wrote."""
+def from_memory(b: PtxBuilder, regs: list[str], d: DType, integer: bool = False) -> list[str]:
+    """Values of dtype d from the registers a load of d wrote. `integer`: f64 reads may be
+    converted in integer instructions (_read_f64)."""
     if d.mem_reg == d.reg:
         return regs
     out = []
@@ -221,11 +228,81 @@ def from_memory(b: PtxBuilder, regs: list[str], d: DType) -> list[str]:
             b.emit("mov.b16", zero, "0")
             b.emit("mov.b32", v, "{" + f"{zero}, {r}" + "}")
         elif d.name == "f64":  # held in f32
-            b.emit("cvt.rn.f32.f64", v, r)
+            _read_f64(b, v, r, integer)
         else:  # bool: one byte, 0 or 1
             b.emit("cvt.rn.f32.u32", v, r)
         out.append(v)
     return out
+
+
+_INTEGER_F64_READS = [True]  # cleared for one compile by integer_f64_reads(False)
+
+
+@contextmanager
+def integer_f64_reads(on: bool) -> Iterator[None]:
+    """Within the block, f64 values read into f32 registers go through the integer ALUs as
+    well as `cvt` (see _read_f64), or through `cvt` alone (shorter PTX)."""
+    saved, _INTEGER_F64_READS[0] = _INTEGER_F64_READS[0], on
+    try:
+        yield
+    finally:
+        _INTEGER_F64_READS[0] = saved
+
+
+def _read_f64(b: PtxBuilder, out: str, r: str, integer: bool) -> None:
+    """`cvt.rn.f32.f64 out, r`; with `integer`, three reads in five computed in integer
+    instructions instead, with the same result bit for bit.
+
+    Ada and the RTX 5090 run cvt.rn.f32.f64 on the f64 unit, at 1/64 of the f32 rate, and a
+    kernel that holds f64 in f32 converts each input element as often as it loads it (attention
+    once per query row for every key): in a loop that reads its inputs again and again, those
+    conversions bound it. The integer form takes about 20 ALU instructions, so the two run side
+    by side: 2 reads in 5, in the order they are emitted, stay cvt, which balanced the f64 unit
+    against the ALUs in the kernels measured. The lowering asks for it in loops only: in
+    straight-line code, which holds everything it loads at once, it cost registers and spills.
+
+    In f32's normal range the result is the top 24 bits of the significand, rounded to nearest
+    even by the 29 below, under the rebiased exponent. Outside it the exponent is clamped first:
+    from 2^128 up the result is inf (NaN stays NaN), and below 2^-126 one f32 multiply rounds it
+    to a subnormal: y = x * 2^126 as a normal f32 times 2^-126. y carries the dropped bits as a
+    sticky last bit, rounding to odd, which leaves the multiply's rounding correct for the 22
+    or fewer bits a subnormal keeps; in the top binade (23 bits) the sticky bit only breaks a
+    tie, so it is added to y when y's last bit is 1."""
+    if integer and _INTEGER_F64_READS[0]:
+        k, b.f64_reads = b.f64_reads, b.f64_reads + 1
+    if not (integer and _INTEGER_F64_READS[0]) or k % 5 in (0, 2):
+        b.emit("cvt.rn.f32.f64", out, r)
+        return
+    lo, hi, a, c, m, t, u, n, y, sg = (b.reg("b32") for _ in range(10))
+    b.emit("mov.b64", "{" + f"{lo}, {hi}" + "}", r)
+    b.emit("and.b32", a, hi, "0x7FFFFFFF")       # |x|: the exponent and 20 bits of significand
+    b.emit("max.u32", c, a, "0x30300000")        # the exponent clamped to [771, 1151]
+    b.emit("min.u32", c, c, "0x47F00000")
+    b.emit("shf.r.wrap.b32", m, lo, c, "29")     # its low 9 bits, then 23 bits of significand
+    b.emit("and.b32", t, lo, "0x1FFFFFFF")       # the 29 bits below them
+    b.emit("and.b32", u, m, "1")
+    b.emit("add.u32", u, u, t)
+    b.emit("add.u32", u, u, "0x0FFFFFFF")
+    b.emit("shr.u32", u, u, "29")                # 1 to round up: past half, or half and odd
+    b.emit("add.u32", n, m, u)
+    b.emit("add.u32", n, n, "0x40000000")        # exponent - 1023 + 127, in its 9 bits
+    b.emit("min.u32", n, n, "0x7F800000")        # 2^128 and up: inf
+    b.emit("min.u32", t, t, "1")                 # the sticky bit
+    b.emit("shf.l.wrap.b32", y, m, m, "2")       # bit 0: exponent bit 7, set only for 896 here
+    b.emit("lop3.b32", y, m, y, t, "0x82")       # sticky, for 896 only if m is odd: ~(m ^ y) & t
+    b.emit("add.u32", y, y, m)
+    b.emit("and.b32", sg, hi, "0x80000000")
+    b.emit("add.u32", y, y, "0x7F000000")        # exponent 771..896 -> 1..126: y = x * 2^126
+    b.emit("or.b32", y, y, sg)
+    b.emit("mul.rn.f32", y, y, f32_imm(2.0 ** -126))
+    p = b.reg("pred")
+    b.emit("setp.lt.u32", p, a, "0x38100000")    # below 2^-126
+    b.emit("selp.b32", n, y, n, p)
+    w = b.reg("b64")
+    b.emit("mov.b64", w, "{" + f"{lo}, {a}" + "}")
+    b.emit("setp.gt.u64", p, w, "0x7FF0000000000000")
+    b.emit("selp.b32", n, "0x7FFFFFFF", n, p)    # NaN, as cvt gives it
+    b.emit("or.b32", out, n, sg)
 
 
 def to_memory(b: PtxBuilder, value: str, d: DType) -> str:

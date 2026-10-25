@@ -85,6 +85,7 @@ class PtxBuilder:
         self.lines: list[Instr | Mark | str] = []
         self._reg_counts: Counter[str] = Counter()
         self._label_count = 0
+        self.f64_reads = 0  # f64 values read into f32 registers so far (dtypes._read_f64)
 
     def mark(self) -> Mark:
         mark = Mark()
