@@ -111,6 +111,14 @@ class DataTypes(unittest.TestCase):
         self.assertEqual(dt.immediate(-1e30, dt.I32), str(-2 ** 31))
         self.assertEqual(dt.immediate(float("inf"), dt.I64), str(2 ** 63 - 1))
 
+    def test_f64_states_cross_lanes_in_two_halves(self):
+        """shfl.sync moves 32 bits: an f64 running max goes over as two halves."""
+        ir = next(p for p in KERNELS if p.parent.name == "c_f64_f02_row_softmax")
+        ptx = compile_file(str(ir))
+        self.assertRegex(ptx, r"mov\.b64\s+\{%r\d+, %r\d+\}, %fd\d+;")
+        self.assertRegex(ptx, r"mov\.b64\s+%fd\d+, \{%r\d+, %r\d+\};")
+        self.assertNotRegex(ptx, r"shfl\.sync\.bfly\.b32\s+%f\d+, %fd")
+
     def test_names(self):
         self.assertIs(dt.dtype("__half"), dt.F16)
         self.assertIs(dt.dtype("float"), dt.F32)

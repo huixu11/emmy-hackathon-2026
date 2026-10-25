@@ -4,6 +4,7 @@ tests/problems_packed/ and run with tools/run_packed.py, which passes them as in
     python tools/generate.py tests/expressions_packed.py --emmy emmy --out tests/problems_packed
     python tools/run_packed.py
 """
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -37,3 +38,9 @@ OPEN = [
     dict(id="t_m_bf16_256", code="torch.randn(256, 256, dtype=torch.bfloat16) @ torch.randn(256, 256, dtype=torch.bfloat16)",
          ref=lambda a, b: [bf16(f64(a) @ f64(b))], rtol=1e-2, atol=1e-1),
 ]
+
+# The open problems with bf16 inputs (tests/expressions_cross.py).
+_cross = importlib.util.spec_from_file_location("cross", Path(__file__).resolve().parent / "expressions_cross.py")
+_mod = importlib.util.module_from_spec(_cross)
+_cross.loader.exec_module(_mod)
+OPEN += [s for s in _mod.ALL if s["id"].startswith("c_bf16_")]

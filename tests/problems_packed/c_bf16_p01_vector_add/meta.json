@@ -1,0 +1,63 @@
+{
+ "id": "c_bf16_p01_vector_add",
+ "code": "torch.randn(1024, dtype=torch.bfloat16) + torch.randn(1024, dtype=torch.bfloat16)",
+ "rtol": 0.05,
+ "atol": 0.05,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_add_pointwise",
+   "arg_order": [
+    "x0",
+    "x1",
+    "add"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x0",
+     "dtype": "bf16",
+     "shape": [
+      1024
+     ],
+     "seed": 0
+    },
+    {
+     "name": "x1",
+     "dtype": "bf16",
+     "shape": [
+      1024
+     ],
+     "seed": 1
+    },
+    {
+     "name": "add",
+     "dtype": "bf16",
+     "shape": [
+      1024
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

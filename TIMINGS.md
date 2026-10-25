@@ -12,10 +12,11 @@ ptxc's kernel times against Emmy's own CUDA for the same problems, on the GPU ru
 | data types | 19 (16 with a reference) | 0.97× | 2 | 14 | 0 |
 | f16 matmul on tensor cores | 9 | 1.00× | 0 | 9 | 0 |
 | f16 attention on tensor cores | 9 | 0.82× | 3 | 6 | 0 |
+| the open problems in f16, f64 and i32 | 39 (36 with a reference) | 1.00× | 6 | 28 | 2 |
 | **all f32** (the five categories) | 149 (147 with a reference) | 0.84× | 48 | 99 | 0 |
-| **all** | 186 (181 with a reference) | 0.85× | 53 | 128 | 0 |
+| **all** | 225 (217 with a reference) | 0.88× | 59 | 156 | 2 |
 
-The rows do not overlap: the 186 are the 149 f32 problems of the five categories plus 37 in other data types or on tensor cores, and all 186 pass. The 10 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 5 (see their rows).
+The rows do not overlap: the 225 are the 149 f32 problems of the five categories plus 76 in other data types or on tensor cores, and all 225 pass. The 23 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 8 (see their rows). The only problems more than 3% slower than the reference are the two f64 attention kernels (see the last table).
 
 The tables below list each set's problems from the slowest relative to the reference to the fastest.
 
@@ -225,7 +226,7 @@ f16, f64, i32 and i64 pointwise ops, conversions, reductions, an f16 softmax and
 
 ## f16 matmul on tensor cores (9 problems, 1.00×)
 
-`mma.sync` m16n8k16 with `ldmatrix` from swizzled shared tiles, or fragments read straight from global memory for the small and odd shapes. The tiling, the stages and the fragment loads all come from the IR, and the times match the reference's.
+`mma.sync` m16n8k16 with `ldmatrix` from swizzled shared tiles, or fragments read straight from global memory for the small and odd shapes. Both compilers issue the same tensor-core instructions here, so the times match.
 
 | problem | ours (µs) | reference (µs) | ours / reference |
 |---|---|---|---|
@@ -255,10 +256,56 @@ q @ k.T and p @ v on `mma.sync`, the online softmax between them on the C fragme
 | `t_s_f16_causal_1x1x64x32` | 4.77 | 6.78 | 0.70× |
 | `t_s_f16_mask_1x2x64x64` | 98.94 | 341.38 | 0.29× |
 
+## The open problems in f16, f64 and i32 (39 problems, 1.00×)
+
+The 15 open problems again, with every input in f16, f64 or i32 (`tests/expressions_cross.py`; the bf16 ones are in `tests/problems_packed`, untimed). Two are slower: f64 attention. The IR multiplies q and k in f64; ptxc does, and the RTX 5090 runs f64 at 1/64 of the f32 rate, while the reference's CUDA declares the f64 values `float` and computes the whole kernel in f32. Its results are less accurate, and pass the 1e-6 tolerance all the same. Three have no reference time: NVRTC rejects their f16 reference sources.
+
+| problem | ours (µs) | reference (µs) | ours / reference |
+|---|---|---|---|
+| `c_f64_a02_attention_128` | 2686.38 | 915.90 | 2.93× |
+| `c_f64_a01_attention` | 2452.30 | 1683.97 | 1.46× |
+| `c_f16_f02_row_softmax` | 3.01 | 2.98 | 1.01× |
+| `c_f16_p00_scalar_add` | 3.01 | 2.98 | 1.01× |
+| `c_i32_p00_scalar_add` | 3.01 | 2.98 | 1.01× |
+| `c_i32_r04_row_sum` | 3.01 | 2.98 | 1.01× |
+| `c_i32_p02_scale_shift` | 3.07 | 3.04 | 1.01× |
+| `c_f64_m01_matmul_512` | 324.06 | 320.77 | 1.01× |
+| `c_f16_r03_mean` | 6.78 | 6.75 | 1.00× |
+| `c_i32_m01_matmul_512` | 21.38 | 21.28 | 1.00× |
+| `c_f16_a01_attention` | 6.78 | 6.78 | 1.00× |
+| `c_f16_m01_matmul_512` | 3.01 | 3.01 | 1.00× |
+| `c_f16_m02_matmul_rect` | 4.74 | 4.74 | 1.00× |
+| `c_f16_p01_vector_add` | 3.01 | 3.01 | 1.00× |
+| `c_f16_p02_scale_shift` | 3.04 | 3.04 | 1.00× |
+| `c_f16_r01_array_sum` | 3.01 | 3.01 | 1.00× |
+| `c_f16_r02_big_sum` | 8.80 | 8.80 | 1.00× |
+| `c_f16_r04_row_sum` | 2.98 | 2.98 | 1.00× |
+| `c_f64_f02_row_softmax` | 4.74 | 4.74 | 1.00× |
+| `c_f64_m02_matmul_rect` | 9.18 | 9.18 | 1.00× |
+| `c_f64_r01_array_sum` | 3.01 | 3.01 | 1.00× |
+| `c_i32_m02_matmul_rect` | 5.06 | 5.06 | 1.00× |
+| `c_i32_p01_vector_add` | 3.01 | 3.01 | 1.00× |
+| `c_i32_p03_relu_mul` | 3.01 | 3.01 | 1.00× |
+| `c_i32_r01_array_sum` | 2.98 | 2.98 | 1.00× |
+| `c_f64_f03_l2norm` | 4.70 | 4.74 | 0.99× |
+| `c_f64_p02_scale_shift` | 4.70 | 4.74 | 0.99× |
+| `c_f64_p00_scalar_add` | 3.01 | 3.04 | 0.99× |
+| `c_f64_p01_vector_add` | 3.01 | 3.04 | 0.99× |
+| `c_f64_r04_row_sum` | 2.98 | 3.01 | 0.99× |
+| `c_f64_r03_mean` | 12.93 | 14.98 | 0.86× |
+| `c_f16_a02_attention_128` | 10.88 | 12.93 | 0.84× |
+| `c_i32_r02_big_sum` | 8.83 | 10.83 | 0.82× |
+| `c_f64_r02_big_sum` | 21.09 | 27.14 | 0.78× |
+| `c_f64_f01_rmsnorm` | 4.74 | 6.78 | 0.70× |
+| `c_f64_p03_relu_mul` | 3.07 | 4.74 | 0.65× |
+| `c_f16_f01_rmsnorm` | 3.26 | — | no reference: NVRTC rejects its reference source |
+| `c_f16_f03_l2norm` | 2.99 | — | no reference: NVRTC rejects its reference source |
+| `c_f16_p03_relu_mul` | 3.01 | — | no reference: NVRTC rejects its reference source |
+
 ## How these were measured
 
 * **Time:** the median of 100 launches after a warmup (`tools/run_problems.py --iters 100`). Each compiler ran twice, the two alternating; each figure is the lower of its two runs.
-* **Ours:** `compile.py` at commit f5af27d of `claude/great-wright-z5xc5f`. All 186 problems pass.
+* **Ours:** `compile.py` at commit f5af27d of `claude/great-wright-z5xc5f` (the last table: with the fixes for f64 cross-lane combines, which change no other kernel's PTX). All problems pass.
 * **Reference:** Emmy's own CUDA for each problem (`*.ref.cu`), compiled to PTX with NVRTC and run under the same launch. That build is a yardstick only; it is not part of the compiler or of this repo.
 * **One session:** the runner's speed drifts by about 20% between sessions, so figures from different sessions do not compare; the ratios here come from one session.
 * **Cold times differ:** without `--iters`, `run_problems.py` shows one cold launch per problem, which reads higher (a02: about 41 µs cold against 29.3 µs here).

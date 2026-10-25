@@ -1,0 +1,63 @@
+{
+ "id": "c_f16_p03_relu_mul",
+ "code": "x = torch.randn(2048, dtype=torch.float16); y = torch.randn(2048, dtype=torch.float16); torch.relu(x) * y",
+ "rtol": 0.02,
+ "atol": 0.02,
+ "graph_inputs": [
+  "x",
+  "y"
+ ],
+ "graph_outputs": [
+  "mul"
+ ],
+ "kernels": [
+  {
+   "node": "mul",
+   "entry": "k_mul_pointwise",
+   "arg_order": [
+    "x",
+    "y",
+    "mul"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f16",
+     "shape": [
+      2048
+     ],
+     "seed": 0
+    },
+    {
+     "name": "y",
+     "dtype": "f16",
+     "shape": [
+      2048
+     ],
+     "seed": 1
+    },
+    {
+     "name": "mul",
+     "dtype": "f16",
+     "shape": [
+      2048
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

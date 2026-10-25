@@ -6,10 +6,10 @@
 > pip install emmy-ml==0.3.11 numpy requests
 > python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > r04.ptx   # IR in, PTX out
 >
-> python -m unittest discover -s tests      # offline: all 202 kernels compile, deterministically
+> python -m unittest discover -s tests      # offline: all 256 kernels compile, deterministically
 > python tools/run_problems.py               # the 15 open problems on the GPU runner: 15/15
-> python tools/run_problems.py --dir tests/problems   # 171 more, all categories and dtypes: 171/171
-> python tools/run_packed.py                 # 10 bf16 / bool problems (packed, see below): 10/10
+> python tools/run_problems.py --dir tests/problems   # 210 more, all categories and dtypes: 210/210
+> python tools/run_packed.py                 # 23 bf16 / bool problems (packed, see below): 23/23
 > python tools/run_problems.py --iters 100   # median of 100 launches, as DESIGN.md reports
 > ```
 >
@@ -24,6 +24,7 @@
 > * **Data types** (`ptxc/dtypes.py`): f32, f16, bf16, f64, i32, i64 and bool, in loads, stores,
 >   arithmetic, reductions and conversions. 16-bit floats round once per op, as torch does;
 >   integer `//` and `%` round toward minus infinity, as torch does (Emmy's own CUDA truncates).
+>   Every open problem also runs with all its inputs in f16, bf16, f64 or i32 (`c_*`).
 > * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
 >   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
 >   XOR-swizzled shared memory (B32, B64, B128, B128@k), fragments read from global memory with
@@ -45,19 +46,21 @@
 >   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
 > * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.
 >
-> **Results.** 15/15 open problems, 171/171 in `tests/problems`, 10/10 in `tests/problems_packed`.
+> **Results.** 15/15 open problems, 210/210 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
 > problems with a reference time, 0.54x on attention; 0.97x on the dtype problems, 1.00x on
-> the 9 tensor-core matmuls and 0.82x on the 9 f16 attention problems. None of the 181 problems
-> with a reference time is more than 3% slower; every one is listed in [TIMINGS.md](TIMINGS.md).
+> the 9 tensor-core matmuls and 0.82x on the 9 f16 attention problems. Of the 217 problems with a
+> reference time, only f64 attention is more than 3% slower: its IR multiplies in f64, which the
+> RTX 5090 runs at 1/64 of the f32 rate, while the reference computes it all in f32. Every problem
+> is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
 > | where | what |
 > |---|---|
 > | `tests/test_compiler.py` | offline unit tests (`python -m unittest discover -s tests`) |
-> | `tests/problems/` | 171 problems from `tests/expressions_variants.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`) and f16 attention (`t_s_*`) |
-> | `tests/problems_packed/` | bf16 and bool problems: the runner cannot allocate those buffers, so `tools/run_packed.py` passes them as int32 words |
+> | `tests/problems/` | 210 problems from `tests/expressions_variants.py` and `tests/expressions_cross.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), and the open problems in f16, f64 and i32 (`c_*`) |
+> | `tests/problems_packed/` | bf16 and bool problems, the open problems in bf16 among them: the runner cannot allocate those buffers, so `tools/run_packed.py` passes them as int32 words |
 > | `examples/compiled/` | seven kernels' IR next to our PTX, with notes on what to look for |
 > | `tools/pow_sweep.py` | `pow` on 27 exponents and the special values, against C's `pow` |
 >
