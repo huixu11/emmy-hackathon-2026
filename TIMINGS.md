@@ -15,6 +15,8 @@ ptxc's kernel times against Emmy's own CUDA for the same problems, on the GPU ru
 | **all f32** (the five categories) | 149 (147 with a reference) | 0.84× | 48 | 99 | 0 |
 | **all** | 186 (181 with a reference) | 0.85× | 53 | 128 | 0 |
 
+The rows do not overlap: the 186 are the 149 f32 problems of the five categories plus 37 in other data types or on tensor cores, and all 186 pass. The 10 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 5 (see their rows).
+
 The tables below list each set's problems from the slowest relative to the reference to the fastest.
 
 ## Pointwise (49 problems, 0.98×)
