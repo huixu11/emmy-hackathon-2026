@@ -1,0 +1,59 @@
+.version 8.0
+.target sm_89
+.address_size 64
+
+.visible .entry k_floor_divide_pointwise(
+	.param .u64 param_floor_divide_c1,
+	.param .u64 param_x,
+	.param .u64 param_floor_divide
+)
+.maxntid 256, 1, 1
+{
+	.reg .b64	%rd<9>;
+	.reg .b32	%r<13>;
+
+	ld.param.u64	%rd0, [param_floor_divide_c1];
+	cvta.to.global.u64	%rd1, %rd0;
+	ld.param.u64	%rd2, [param_x];
+	cvta.to.global.u64	%rd3, %rd2;
+	ld.param.u64	%rd4, [param_floor_divide];
+	cvta.to.global.u64	%rd5, %rd4;
+	// Tile[a0] (N=1024)
+	mov.u32	%r0, %tid.x;
+	mov.u32	%r1, %ctaid.x;
+	mov.u32	%r2, %ntid.x;
+	mad.lo.s32	%r3, %r1, %r2, %r0;
+	// in0__u0 = load floor_divide_c1[0]
+	// in1__u0 = load x[((a0 * 4) + 0)]
+	mul.lo.s32	%r4, %r3, 4;
+	mul.wide.s32	%rd6, %r4, 4;
+	add.s64	%rd7, %rd3, %rd6;
+	ld.global.nc.s32	%r5, [%rd7];
+	// i32 v0__u0 = floor_divide(in1__u0, in0__u0)
+	shr.s32	%r6, %r5, 1;
+	// in0__u1 = load floor_divide_c1[0]
+	// in1__u1 = load x[((a0 * 4) + 1)]
+	ld.global.nc.s32	%r7, [%rd7+4];
+	// i32 v0__u1 = floor_divide(in1__u1, in0__u1)
+	shr.s32	%r8, %r7, 1;
+	// in0__u2 = load floor_divide_c1[0]
+	// in1__u2 = load x[((a0 * 4) + 2)]
+	ld.global.nc.s32	%r9, [%rd7+8];
+	// i32 v0__u2 = floor_divide(in1__u2, in0__u2)
+	shr.s32	%r10, %r9, 1;
+	// in0__u3 = load floor_divide_c1[0]
+	// in1__u3 = load x[((a0 * 4) + 3)]
+	ld.global.nc.s32	%r11, [%rd7+12];
+	// i32 v0__u3 = floor_divide(in1__u3, in0__u3)
+	shr.s32	%r12, %r11, 1;
+	// floor_divide[((a0 * 4) + 0)] = v0__u0
+	add.s64	%rd8, %rd5, %rd6;
+	st.global.s32	[%rd8], %r6;
+	// floor_divide[((a0 * 4) + 1)] = v0__u1
+	st.global.s32	[%rd8+4], %r8;
+	// floor_divide[((a0 * 4) + 2)] = v0__u2
+	st.global.s32	[%rd8+8], %r10;
+	// floor_divide[((a0 * 4) + 3)] = v0__u3
+	st.global.s32	[%rd8+12], %r12;
+	ret;
+}

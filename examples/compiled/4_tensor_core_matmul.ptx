@@ -1,0 +1,567 @@
+.version 8.0
+.target sm_89
+.address_size 64
+
+.shared .align 1024 .b8 sh__a_smem[32768];
+.shared .align 256 .b8 sh__b_smem[2048];
+
+.visible .entry k_matmul_88f287(
+	.param .u64 param_x1,
+	.param .u64 param_x0,
+	.param .u64 param_matmul
+)
+.maxntid 256, 1, 1
+{
+	.reg .b64	%rd<12>;
+	.reg .b32	%r<215>;
+	.reg .f32	%f<16>;
+	.reg .pred	%p<1>;
+	.reg .b16	%h<16>;
+
+	ld.param.u64	%rd0, [param_x1];
+	cvta.to.global.u64	%rd1, %rd0;
+	ld.param.u64	%rd2, [param_x0];
+	cvta.to.global.u64	%rd3, %rd2;
+	ld.param.u64	%rd4, [param_matmul];
+	cvta.to.global.u64	%rd5, %rd4;
+	// Tile[a0_b, a1_b, a0_u, a1_u, _lane] (N=4096)
+	mov.u32	%r0, %tid.x;
+	mov.u32	%r1, %ctaid.x;
+	mov.u32	%r2, %ntid.x;
+	mad.lo.s32	%r3, %r1, %r2, %r0;
+	shr.u32	%r4, %r3, 12;
+	shr.u32	%r5, %r3, 8;
+	and.b32	%r6, %r5, 15;
+	shr.u32	%r7, %r3, 6;
+	and.b32	%r8, %r7, 3;
+	shr.u32	%r9, %r3, 5;
+	and.b32	%r10, %r9, 1;
+	and.b32	%r11, %r3, 31;
+	// RegFragment a:f16 _a0[4] (16x8x16)
+	// RegFragment a:f16 _a1[4] (16x8x16)
+	// RegFragment a:f16 _a2[4] (16x8x16)
+	// RegFragment a:f16 _a3[4] (16x8x16)
+	// RegFragment b:f16 _b0[2] (16x8x16)
+	// RegFragment c:f32 _c0_0[4] (16x8x16)
+	mov.f32	%f0, 0f00000000;
+	mov.f32	%f1, 0f00000000;
+	mov.f32	%f2, 0f00000000;
+	mov.f32	%f3, 0f00000000;
+	// RegFragment c:f32 _c1_0[4] (16x8x16)
+	mov.f32	%f4, 0f00000000;
+	mov.f32	%f5, 0f00000000;
+	mov.f32	%f6, 0f00000000;
+	mov.f32	%f7, 0f00000000;
+	// RegFragment c:f32 _c2_0[4] (16x8x16)
+	mov.f32	%f8, 0f00000000;
+	mov.f32	%f9, 0f00000000;
+	mov.f32	%f10, 0f00000000;
+	mov.f32	%f11, 0f00000000;
+	// RegFragment c:f32 _c3_0[4] (16x8x16)
+	mov.f32	%f12, 0f00000000;
+	mov.f32	%f13, 0f00000000;
+	mov.f32	%f14, 0f00000000;
+	mov.f32	%f15, 0f00000000;
+	// Smem __half _a_smem[256, 64] align=1024
+	// Smem __half _b_smem[64, 16] align=256
+	// for _ks in 0..256:64
+	// _ks: trip 0 of 4
+	mul.lo.s32	%r30, %r8, 2;
+	add.s32	%r31, %r10, %r30;
+	mul.lo.s32	%r32, %r31, 32;
+	add.s32	%r33, %r11, %r32;
+	mul.lo.s32	%r34, %r33, 8;
+	shr.u32	%r35, %r34, 6;
+	and.b32	%r36, %r34, 63;
+	mul.lo.s32	%r37, %r35, 64;
+	add.s32	%r38, %r36, %r37;
+	bfe.u32	%r39, %r38, 6, 3;
+	shl.b32	%r40, %r39, 3;
+	xor.b32	%r41, %r38, %r40;
+	mov.u32	%r42, sh__a_smem;
+	mad.lo.s32	%r43, %r41, 2, %r42;
+	mul.lo.s32	%r44, %r4, 256;
+	add.s32	%r45, %r35, %r44;
+	mul.lo.s32	%r46, %r45, 256;
+	add.s32	%r47, %r36, %r46;
+	mul.wide.s32	%rd6, %r47, 2;
+	add.s64	%rd7, %rd3, %rd6;
+	add.s32	%r48, %r38, 2048;
+	bfe.u32	%r49, %r48, 6, 3;
+	shl.b32	%r50, %r49, 3;
+	xor.b32	%r51, %r48, %r50;
+	mad.lo.s32	%r52, %r51, 2, %r42;
+	add.s32	%r53, %r38, 4096;
+	bfe.u32	%r54, %r53, 6, 3;
+	shl.b32	%r55, %r54, 3;
+	xor.b32	%r56, %r53, %r55;
+	mad.lo.s32	%r57, %r56, 2, %r42;
+	add.s32	%r58, %r38, 6144;
+	bfe.u32	%r59, %r58, 6, 3;
+	shl.b32	%r60, %r59, 3;
+	xor.b32	%r61, %r58, %r60;
+	mad.lo.s32	%r62, %r61, 2, %r42;
+	add.s32	%r63, %r38, 8192;
+	bfe.u32	%r64, %r63, 6, 3;
+	shl.b32	%r65, %r64, 3;
+	xor.b32	%r66, %r63, %r65;
+	mad.lo.s32	%r67, %r66, 2, %r42;
+	add.s32	%r68, %r38, 10240;
+	bfe.u32	%r69, %r68, 6, 3;
+	shl.b32	%r70, %r69, 3;
+	xor.b32	%r71, %r68, %r70;
+	mad.lo.s32	%r72, %r71, 2, %r42;
+	add.s32	%r73, %r38, 12288;
+	bfe.u32	%r74, %r73, 6, 3;
+	shl.b32	%r75, %r74, 3;
+	xor.b32	%r76, %r73, %r75;
+	mad.lo.s32	%r77, %r76, 2, %r42;
+	add.s32	%r78, %r38, 14336;
+	bfe.u32	%r79, %r78, 6, 3;
+	shl.b32	%r80, %r79, 3;
+	xor.b32	%r81, %r78, %r80;
+	mad.lo.s32	%r82, %r81, 2, %r42;
+	setp.lt.s32	%p0, %r33, 128;
+	shr.u32	%r83, %r34, 4;
+	mul.lo.s32	%r84, %r83, 16;
+	and.b32	%r85, %r34, 15;
+	add.s32	%r86, %r84, %r85;
+	bfe.u32	%r87, %r86, 6, 1;
+	shl.b32	%r88, %r87, 3;
+	xor.b32	%r89, %r86, %r88;
+	mov.u32	%r90, sh__b_smem;
+	mad.lo.s32	%r91, %r89, 2, %r90;
+	mul.lo.s32	%r92, %r83, 256;
+	mul.lo.s32	%r93, %r6, 16;
+	add.s32	%r94, %r85, %r93;
+	add.s32	%r95, %r92, %r94;
+	mul.wide.s32	%rd8, %r95, 2;
+	add.s64	%rd9, %rd1, %rd8;
+	and.b32	%r96, %r0, 31;
+	and.b32	%r97, %r96, 15;
+	shr.u32	%r98, %r96, 4;
+	mul.lo.s32	%r99, %r97, 64;
+	mul.lo.s32	%r100, %r98, 8;
+	add.s32	%r101, %r100, %r99;
+	mul.lo.s32	%r102, %r8, 64;
+	mul.lo.s32	%r103, %r102, 64;
+	add.s32	%r104, %r101, %r103;
+	bfe.u32	%r105, %r104, 6, 3;
+	shl.b32	%r106, %r105, 3;
+	xor.b32	%r107, %r104, %r106;
+	mad.lo.s32	%r108, %r107, 2, %r42;
+	add.s32	%r109, %r104, 1024;
+	bfe.u32	%r110, %r109, 6, 3;
+	shl.b32	%r111, %r110, 3;
+	xor.b32	%r112, %r109, %r111;
+	mad.lo.s32	%r113, %r112, 2, %r42;
+	add.s32	%r114, %r104, 2048;
+	bfe.u32	%r115, %r114, 6, 3;
+	shl.b32	%r116, %r115, 3;
+	xor.b32	%r117, %r114, %r116;
+	mad.lo.s32	%r118, %r117, 2, %r42;
+	add.s32	%r119, %r104, 3072;
+	bfe.u32	%r120, %r119, 6, 3;
+	shl.b32	%r121, %r120, 3;
+	xor.b32	%r122, %r119, %r121;
+	mad.lo.s32	%r123, %r122, 2, %r42;
+	mul.lo.s32	%r124, %r97, 16;
+	mul.lo.s32	%r125, %r10, 8;
+	add.s32	%r126, %r124, %r125;
+	bfe.u32	%r127, %r126, 6, 1;
+	shl.b32	%r128, %r127, 3;
+	xor.b32	%r129, %r126, %r128;
+	mad.lo.s32	%r130, %r129, 2, %r90;
+	add.s32	%r131, %r104, 16;
+	bfe.u32	%r132, %r131, 6, 3;
+	shl.b32	%r133, %r132, 3;
+	xor.b32	%r134, %r131, %r133;
+	mad.lo.s32	%r135, %r134, 2, %r42;
+	add.s32	%r136, %r104, 1040;
+	bfe.u32	%r137, %r136, 6, 3;
+	shl.b32	%r138, %r137, 3;
+	xor.b32	%r139, %r136, %r138;
+	mad.lo.s32	%r140, %r139, 2, %r42;
+	add.s32	%r141, %r104, 2064;
+	bfe.u32	%r142, %r141, 6, 3;
+	shl.b32	%r143, %r142, 3;
+	xor.b32	%r144, %r141, %r143;
+	mad.lo.s32	%r145, %r144, 2, %r42;
+	add.s32	%r146, %r104, 3088;
+	bfe.u32	%r147, %r146, 6, 3;
+	shl.b32	%r148, %r147, 3;
+	xor.b32	%r149, %r146, %r148;
+	mad.lo.s32	%r150, %r149, 2, %r42;
+	add.s32	%r151, %r126, 256;
+	bfe.u32	%r152, %r151, 6, 1;
+	shl.b32	%r153, %r152, 3;
+	xor.b32	%r154, %r151, %r153;
+	mad.lo.s32	%r155, %r154, 2, %r90;
+	add.s32	%r156, %r104, 32;
+	bfe.u32	%r157, %r156, 6, 3;
+	shl.b32	%r158, %r157, 3;
+	xor.b32	%r159, %r156, %r158;
+	mad.lo.s32	%r160, %r159, 2, %r42;
+	add.s32	%r161, %r104, 1056;
+	bfe.u32	%r162, %r161, 6, 3;
+	shl.b32	%r163, %r162, 3;
+	xor.b32	%r164, %r161, %r163;
+	mad.lo.s32	%r165, %r164, 2, %r42;
+	add.s32	%r166, %r104, 2080;
+	bfe.u32	%r167, %r166, 6, 3;
+	shl.b32	%r168, %r167, 3;
+	xor.b32	%r169, %r166, %r168;
+	mad.lo.s32	%r170, %r169, 2, %r42;
+	add.s32	%r171, %r104, 3104;
+	bfe.u32	%r172, %r171, 6, 3;
+	shl.b32	%r173, %r172, 3;
+	xor.b32	%r174, %r171, %r173;
+	mad.lo.s32	%r175, %r174, 2, %r42;
+	add.s32	%r176, %r126, 512;
+	bfe.u32	%r177, %r176, 6, 1;
+	shl.b32	%r178, %r177, 3;
+	xor.b32	%r179, %r176, %r178;
+	mad.lo.s32	%r180, %r179, 2, %r90;
+	add.s32	%r181, %r104, 48;
+	bfe.u32	%r182, %r181, 6, 3;
+	shl.b32	%r183, %r182, 3;
+	xor.b32	%r184, %r181, %r183;
+	mad.lo.s32	%r185, %r184, 2, %r42;
+	add.s32	%r186, %r104, 1072;
+	bfe.u32	%r187, %r186, 6, 3;
+	shl.b32	%r188, %r187, 3;
+	xor.b32	%r189, %r186, %r188;
+	mad.lo.s32	%r190, %r189, 2, %r42;
+	add.s32	%r191, %r104, 2096;
+	bfe.u32	%r192, %r191, 6, 3;
+	shl.b32	%r193, %r192, 3;
+	xor.b32	%r194, %r191, %r193;
+	mad.lo.s32	%r195, %r194, 2, %r42;
+	add.s32	%r196, %r104, 3120;
+	bfe.u32	%r197, %r196, 6, 3;
+	shl.b32	%r198, %r197, 3;
+	xor.b32	%r199, %r196, %r198;
+	mad.lo.s32	%r200, %r199, 2, %r42;
+	add.s32	%r201, %r126, 768;
+	bfe.u32	%r202, %r201, 6, 1;
+	shl.b32	%r203, %r202, 3;
+	xor.b32	%r204, %r201, %r203;
+	mad.lo.s32	%r205, %r204, 2, %r90;
+	// cp.async[16B] _a_smem[0, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 0)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r43], [%rd7], 16;
+	// cp.async[16B] _a_smem[32, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 32)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r52], [%rd7+16384], 16;
+	// cp.async[16B] _a_smem[64, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 64)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r57], [%rd7+32768], 16;
+	// cp.async[16B] _a_smem[96, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 96)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r62], [%rd7+49152], 16;
+	// cp.async[16B] _a_smem[128, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 128)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r67], [%rd7+65536], 16;
+	// cp.async[16B] _a_smem[160, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 160)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r72], [%rd7+81920], 16;
+	// cp.async[16B] _a_smem[192, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 192)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r77], [%rd7+98304], 16;
+	// cp.async[16B] _a_smem[224, 0] + lane(((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64), ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64)) swz=B128 <- x0[((a0_b * 256) + (((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) / 64) + 224)), (_ks + ((((((a0_u * 2) + a1_u) * 32) + _lane) * 8) % 64))]
+	cp.async.cg.shared.global	[%r82], [%rd7+114688], 16;
+	// for _fb in ((((a0_u * 2) + a1_u) * 32) + _lane)..128:256
+	@!%p0 bra	$L1_once_end;
+	// cp.async[16B] _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] swz=B32 <- x1[(_ks + ((_fb * 8) / 16)), ((a1_b * 16) + ((_fb * 8) % 16))]
+	cp.async.cg.shared.global	[%r91], [%rd9], 16;
+$L1_once_end:
+	// cp.async.commit_group
+	cp.async.commit_group;
+	// cp.async.wait_group(0)
+	cp.async.wait_group	0;
+	// Sync
+	bar.sync	0;
+	// for _ki in 0..64:16
+	// _ki: trip 0 of 4
+	// LdmatrixLoad _a0 <- _a_smem[((a0_u * 64) + 0), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r108];
+	// LdmatrixLoad _a1 <- _a_smem[((a0_u * 64) + 16), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r113];
+	// LdmatrixLoad _a2 <- _a_smem[((a0_u * 64) + 32), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r118];
+	// LdmatrixLoad _a3 <- _a_smem[((a0_u * 64) + 48), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r123];
+	// LdmatrixLoad _b0 <- _b_smem[_ki, ((a1_u * 8) + 0)] (x2.trans, ldm=16)
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r130];
+	// MmaSyncPtx _c0_0 += _a0 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	// MmaSyncPtx _c1_0 += _a1 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	// MmaSyncPtx _c2_0 += _a2 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	// MmaSyncPtx _c3_0 += _a3 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 1 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r135];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r140];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r145];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r150];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r155];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 2 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r160];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r165];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r170];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r175];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r180];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 3 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r185];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r190];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r195];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r200];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r205];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// Sync
+	bar.sync	0;
+	// _ks: trip 1 of 4
+	cp.async.cg.shared.global	[%r43], [%rd7+128], 16;
+	cp.async.cg.shared.global	[%r52], [%rd7+16512], 16;
+	cp.async.cg.shared.global	[%r57], [%rd7+32896], 16;
+	cp.async.cg.shared.global	[%r62], [%rd7+49280], 16;
+	cp.async.cg.shared.global	[%r67], [%rd7+65664], 16;
+	cp.async.cg.shared.global	[%r72], [%rd7+82048], 16;
+	cp.async.cg.shared.global	[%r77], [%rd7+98432], 16;
+	cp.async.cg.shared.global	[%r82], [%rd7+114816], 16;
+	@!%p0 bra	$L2_once_end;
+	// cp.async[16B] _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] swz=B32 <- x1[(_ks + ((_fb * 8) / 16)), ((a1_b * 16) + ((_fb * 8) % 16))]
+	cp.async.cg.shared.global	[%r91], [%rd9+32768], 16;
+$L2_once_end:
+	cp.async.commit_group;
+	cp.async.wait_group	0;
+	bar.sync	0;
+	// _ki: trip 0 of 4
+	// LdmatrixLoad _a0 <- _a_smem[((a0_u * 64) + 0), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r108];
+	// LdmatrixLoad _a1 <- _a_smem[((a0_u * 64) + 16), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r113];
+	// LdmatrixLoad _a2 <- _a_smem[((a0_u * 64) + 32), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r118];
+	// LdmatrixLoad _a3 <- _a_smem[((a0_u * 64) + 48), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r123];
+	// LdmatrixLoad _b0 <- _b_smem[_ki, ((a1_u * 8) + 0)] (x2.trans, ldm=16)
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r130];
+	// MmaSyncPtx _c0_0 += _a0 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	// MmaSyncPtx _c1_0 += _a1 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	// MmaSyncPtx _c2_0 += _a2 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	// MmaSyncPtx _c3_0 += _a3 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 1 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r135];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r140];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r145];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r150];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r155];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 2 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r160];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r165];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r170];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r175];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r180];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 3 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r185];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r190];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r195];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r200];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r205];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	bar.sync	0;
+	// _ks: trip 2 of 4
+	cp.async.cg.shared.global	[%r43], [%rd7+256], 16;
+	cp.async.cg.shared.global	[%r52], [%rd7+16640], 16;
+	cp.async.cg.shared.global	[%r57], [%rd7+33024], 16;
+	cp.async.cg.shared.global	[%r62], [%rd7+49408], 16;
+	cp.async.cg.shared.global	[%r67], [%rd7+65792], 16;
+	cp.async.cg.shared.global	[%r72], [%rd7+82176], 16;
+	cp.async.cg.shared.global	[%r77], [%rd7+98560], 16;
+	cp.async.cg.shared.global	[%r82], [%rd7+114944], 16;
+	@!%p0 bra	$L3_once_end;
+	// cp.async[16B] _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] swz=B32 <- x1[(_ks + ((_fb * 8) / 16)), ((a1_b * 16) + ((_fb * 8) % 16))]
+	cp.async.cg.shared.global	[%r91], [%rd9+65536], 16;
+$L3_once_end:
+	cp.async.commit_group;
+	cp.async.wait_group	0;
+	bar.sync	0;
+	// _ki: trip 0 of 4
+	// LdmatrixLoad _a0 <- _a_smem[((a0_u * 64) + 0), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r108];
+	// LdmatrixLoad _a1 <- _a_smem[((a0_u * 64) + 16), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r113];
+	// LdmatrixLoad _a2 <- _a_smem[((a0_u * 64) + 32), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r118];
+	// LdmatrixLoad _a3 <- _a_smem[((a0_u * 64) + 48), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r123];
+	// LdmatrixLoad _b0 <- _b_smem[_ki, ((a1_u * 8) + 0)] (x2.trans, ldm=16)
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r130];
+	// MmaSyncPtx _c0_0 += _a0 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	// MmaSyncPtx _c1_0 += _a1 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	// MmaSyncPtx _c2_0 += _a2 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	// MmaSyncPtx _c3_0 += _a3 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 1 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r135];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r140];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r145];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r150];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r155];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 2 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r160];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r165];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r170];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r175];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r180];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 3 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r185];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r190];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r195];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r200];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r205];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	bar.sync	0;
+	// _ks: trip 3 of 4
+	cp.async.cg.shared.global	[%r43], [%rd7+384], 16;
+	cp.async.cg.shared.global	[%r52], [%rd7+16768], 16;
+	cp.async.cg.shared.global	[%r57], [%rd7+33152], 16;
+	cp.async.cg.shared.global	[%r62], [%rd7+49536], 16;
+	cp.async.cg.shared.global	[%r67], [%rd7+65920], 16;
+	cp.async.cg.shared.global	[%r72], [%rd7+82304], 16;
+	cp.async.cg.shared.global	[%r77], [%rd7+98688], 16;
+	cp.async.cg.shared.global	[%r82], [%rd7+115072], 16;
+	@!%p0 bra	$L4_once_end;
+	// cp.async[16B] _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] swz=B32 <- x1[(_ks + ((_fb * 8) / 16)), ((a1_b * 16) + ((_fb * 8) % 16))]
+	cp.async.cg.shared.global	[%r91], [%rd9+98304], 16;
+$L4_once_end:
+	cp.async.commit_group;
+	cp.async.wait_group	0;
+	bar.sync	0;
+	// _ki: trip 0 of 4
+	// LdmatrixLoad _a0 <- _a_smem[((a0_u * 64) + 0), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r108];
+	// LdmatrixLoad _a1 <- _a_smem[((a0_u * 64) + 16), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r113];
+	// LdmatrixLoad _a2 <- _a_smem[((a0_u * 64) + 32), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r118];
+	// LdmatrixLoad _a3 <- _a_smem[((a0_u * 64) + 48), _ki] (x4, ldm=64)
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r123];
+	// LdmatrixLoad _b0 <- _b_smem[_ki, ((a1_u * 8) + 0)] (x2.trans, ldm=16)
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r130];
+	// MmaSyncPtx _c0_0 += _a0 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	// MmaSyncPtx _c1_0 += _a1 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	// MmaSyncPtx _c2_0 += _a2 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	// MmaSyncPtx _c3_0 += _a3 @ _b0 (m16n8k16 f16)
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 1 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r135];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r140];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r145];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r150];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r155];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 2 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r160];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r165];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r170];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r175];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r180];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	// _ki: trip 3 of 4
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r12, %r13, %r14, %r15}, [%r185];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r16, %r17, %r18, %r19}, [%r190];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r20, %r21, %r22, %r23}, [%r195];
+	ldmatrix.sync.aligned.m8n8.x4.shared.b16	{%r24, %r25, %r26, %r27}, [%r200];
+	ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16	{%r28, %r29}, [%r205];
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f0, %f1, %f2, %f3}, {%r12, %r13, %r14, %r15}, {%r28, %r29}, {%f0, %f1, %f2, %f3};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f4, %f5, %f6, %f7}, {%r16, %r17, %r18, %r19}, {%r28, %r29}, {%f4, %f5, %f6, %f7};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f8, %f9, %f10, %f11}, {%r20, %r21, %r22, %r23}, {%r28, %r29}, {%f8, %f9, %f10, %f11};
+	mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32	{%f12, %f13, %f14, %f15}, {%r24, %r25, %r26, %r27}, {%r28, %r29}, {%f12, %f13, %f14, %f15};
+	bar.sync	0;
+	// RegStore matmul[(((a0_b * 256) + (a0_u * 64)) + 0), (((a1_b * 16) + (a1_u * 8)) + 0)] <- _c0_0 (ldm=auto)
+	add.s32	%r206, %r102, %r44;
+	add.s32	%r207, %r125, %r93;
+	shr.u32	%r208, %r96, 2;
+	and.b32	%r209, %r96, 3;
+	mul.lo.s32	%r210, %r209, 2;
+	add.s32	%r211, %r206, %r208;
+	add.s32	%r212, %r207, %r210;
+	mul.lo.s32	%r213, %r211, 256;
+	add.s32	%r214, %r212, %r213;
+	cvt.rn.f16.f32	%h0, %f0;
+	cvt.rn.f16.f32	%h1, %f1;
+	mul.wide.s32	%rd10, %r214, 2;
+	add.s64	%rd11, %rd5, %rd10;
+	st.global.v2.b16	[%rd11], {%h0, %h1};
+	cvt.rn.f16.f32	%h2, %f2;
+	cvt.rn.f16.f32	%h3, %f3;
+	st.global.v2.b16	[%rd11+4096], {%h2, %h3};
+	// RegStore matmul[(((a0_b * 256) + (a0_u * 64)) + 16), (((a1_b * 16) + (a1_u * 8)) + 0)] <- _c1_0 (ldm=auto)
+	cvt.rn.f16.f32	%h4, %f4;
+	cvt.rn.f16.f32	%h5, %f5;
+	st.global.v2.b16	[%rd11+8192], {%h4, %h5};
+	cvt.rn.f16.f32	%h6, %f6;
+	cvt.rn.f16.f32	%h7, %f7;
+	st.global.v2.b16	[%rd11+12288], {%h6, %h7};
+	// RegStore matmul[(((a0_b * 256) + (a0_u * 64)) + 32), (((a1_b * 16) + (a1_u * 8)) + 0)] <- _c2_0 (ldm=auto)
+	cvt.rn.f16.f32	%h8, %f8;
+	cvt.rn.f16.f32	%h9, %f9;
+	st.global.v2.b16	[%rd11+16384], {%h8, %h9};
+	cvt.rn.f16.f32	%h10, %f10;
+	cvt.rn.f16.f32	%h11, %f11;
+	st.global.v2.b16	[%rd11+20480], {%h10, %h11};
+	// RegStore matmul[(((a0_b * 256) + (a0_u * 64)) + 48), (((a1_b * 16) + (a1_u * 8)) + 0)] <- _c3_0 (ldm=auto)
+	cvt.rn.f16.f32	%h12, %f12;
+	cvt.rn.f16.f32	%h13, %f13;
+	st.global.v2.b16	[%rd11+24576], {%h12, %h13};
+	cvt.rn.f16.f32	%h14, %f14;
+	cvt.rn.f16.f32	%h15, %f15;
+	st.global.v2.b16	[%rd11+28672], {%h14, %h15};
+	ret;
+}

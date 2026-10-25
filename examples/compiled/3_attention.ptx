@@ -1,0 +1,299 @@
+.version 8.0
+.target sm_89
+.address_size 64
+
+.visible .entry k_matmul_softmax_reduce_6f0029(
+	.param .u64 param_div_c1,
+	.param .u64 param_q,
+	.param .u64 param_kt,
+	.param .u64 param_v,
+	.param .u64 param_matmul_1
+)
+.maxntid 32, 1, 1
+{
+	.reg .b64	%rd<20>;
+	.reg .b32	%r<20>;
+	.reg .f32	%f<125>;
+	.reg .pred	%p<1>;
+
+	ld.param.u64	%rd0, [param_div_c1];
+	cvta.to.global.u64	%rd1, %rd0;
+	ld.param.u64	%rd2, [param_q];
+	cvta.to.global.u64	%rd3, %rd2;
+	ld.param.u64	%rd4, [param_kt];
+	cvta.to.global.u64	%rd5, %rd4;
+	ld.param.u64	%rd6, [param_v];
+	cvta.to.global.u64	%rd7, %rd6;
+	ld.param.u64	%rd8, [param_matmul_1];
+	cvta.to.global.u64	%rd9, %rd8;
+	// Tile[a0_b, a5_b, a0_u, a5_u] (N=4096)
+	mov.u32	%r0, %tid.x;
+	mov.u32	%r1, %ctaid.x;
+	mov.u32	%r2, %ntid.x;
+	mad.lo.s32	%r3, %r1, %r2, %r0;
+	shr.u32	%r4, %r3, 5;
+	and.b32	%r5, %r4, 7;
+	shr.u32	%r6, %r4, 3;
+	mul.lo.s32	%r7, %r6, 8;
+	and.b32	%r8, %r5, 7;
+	add.s32	%r9, %r7, %r8;
+	shr.u32	%r10, %r5, 3;
+	and.b32	%r11, %r3, 31;
+	// in0 = load div_c1[0]
+	// f32 v1 = reciprocal(in0)
+	rcp.rn.f32	%f0, 0f40B504F3;
+	// for a1 in 0..128
+	mov.f32	%f1, 0f00000000;
+	mov.f32	%f2, 0f00000000;
+	mov.f32	%f3, 0fF149F2CA;
+	mov.s32	%r12, 0;
+	mul.lo.s32	%r13, %r10, 32;
+	add.s32	%r14, %r11, %r13;
+	mul.wide.s32	%rd10, %r14, 4;
+	add.s64	%rd11, %rd7, %rd10;
+	ld.global.nc.f32	%f4, [%rd5];
+	ld.global.nc.f32	%f5, [%rd5+512];
+	ld.global.nc.f32	%f6, [%rd5+1024];
+	ld.global.nc.f32	%f7, [%rd5+1536];
+	ld.global.nc.f32	%f8, [%rd5+2048];
+	ld.global.nc.f32	%f9, [%rd5+2560];
+	ld.global.nc.f32	%f10, [%rd5+3072];
+	ld.global.nc.f32	%f11, [%rd5+3584];
+	ld.global.nc.f32	%f12, [%rd5+4096];
+	ld.global.nc.f32	%f13, [%rd5+4608];
+	ld.global.nc.f32	%f14, [%rd5+5120];
+	ld.global.nc.f32	%f15, [%rd5+5632];
+	ld.global.nc.f32	%f16, [%rd5+6144];
+	ld.global.nc.f32	%f17, [%rd5+6656];
+	ld.global.nc.f32	%f18, [%rd5+7168];
+	ld.global.nc.f32	%f19, [%rd5+7680];
+	ld.global.nc.f32	%f20, [%rd5+8192];
+	ld.global.nc.f32	%f21, [%rd5+8704];
+	ld.global.nc.f32	%f22, [%rd5+9216];
+	ld.global.nc.f32	%f23, [%rd5+9728];
+	ld.global.nc.f32	%f24, [%rd5+10240];
+	ld.global.nc.f32	%f25, [%rd5+10752];
+	ld.global.nc.f32	%f26, [%rd5+11264];
+	ld.global.nc.f32	%f27, [%rd5+11776];
+	ld.global.nc.f32	%f28, [%rd5+12288];
+	ld.global.nc.f32	%f29, [%rd5+12800];
+	ld.global.nc.f32	%f30, [%rd5+13312];
+	ld.global.nc.f32	%f31, [%rd5+13824];
+	ld.global.nc.f32	%f32, [%rd5+14336];
+	ld.global.nc.f32	%f33, [%rd5+14848];
+	ld.global.nc.f32	%f34, [%rd5+15360];
+	ld.global.nc.f32	%f35, [%rd5+15872];
+	ld.global.nc.f32	%f36, [%rd11];
+	mul.lo.s32	%r18, %r9, 32;
+	mul.wide.s32	%rd16, %r18, 4;
+	add.s64	%rd17, %rd3, %rd16;
+$L1_loop:
+	add.s32	%r15, %r12, 1;
+	min.s32	%r15, %r15, 127;
+	mul.wide.s32	%rd12, %r15, 4;
+	add.s64	%rd13, %rd5, %rd12;
+	mul.lo.s32	%r16, %r15, 32;
+	add.s32	%r17, %r14, %r16;
+	mul.wide.s32	%rd14, %r17, 4;
+	add.s64	%rd15, %rd7, %rd14;
+	ld.global.nc.f32	%f37, [%rd13];
+	ld.global.nc.f32	%f38, [%rd13+512];
+	ld.global.nc.f32	%f39, [%rd13+1024];
+	ld.global.nc.f32	%f40, [%rd13+1536];
+	ld.global.nc.f32	%f41, [%rd13+2048];
+	ld.global.nc.f32	%f42, [%rd13+2560];
+	ld.global.nc.f32	%f43, [%rd13+3072];
+	ld.global.nc.f32	%f44, [%rd13+3584];
+	ld.global.nc.f32	%f45, [%rd13+4096];
+	ld.global.nc.f32	%f46, [%rd13+4608];
+	ld.global.nc.f32	%f47, [%rd13+5120];
+	ld.global.nc.f32	%f48, [%rd13+5632];
+	ld.global.nc.f32	%f49, [%rd13+6144];
+	ld.global.nc.f32	%f50, [%rd13+6656];
+	ld.global.nc.f32	%f51, [%rd13+7168];
+	ld.global.nc.f32	%f52, [%rd13+7680];
+	ld.global.nc.f32	%f53, [%rd13+8192];
+	ld.global.nc.f32	%f54, [%rd13+8704];
+	ld.global.nc.f32	%f55, [%rd13+9216];
+	ld.global.nc.f32	%f56, [%rd13+9728];
+	ld.global.nc.f32	%f57, [%rd13+10240];
+	ld.global.nc.f32	%f58, [%rd13+10752];
+	ld.global.nc.f32	%f59, [%rd13+11264];
+	ld.global.nc.f32	%f60, [%rd13+11776];
+	ld.global.nc.f32	%f61, [%rd13+12288];
+	ld.global.nc.f32	%f62, [%rd13+12800];
+	ld.global.nc.f32	%f63, [%rd13+13312];
+	ld.global.nc.f32	%f64, [%rd13+13824];
+	ld.global.nc.f32	%f65, [%rd13+14336];
+	ld.global.nc.f32	%f66, [%rd13+14848];
+	ld.global.nc.f32	%f67, [%rd13+15360];
+	ld.global.nc.f32	%f68, [%rd13+15872];
+	ld.global.nc.f32	%f69, [%rd15];
+	// for a2 in 0..32
+	mov.f32	%f70, 0f00000000;
+	// a2: trip 0 of 32
+	// in2__ar0 = load q[(((a0_b * 1) + (a0_u * 1)) + 0), a2]
+	ld.global.nc.v4.f32	{%f71, %f72, %f73, %f74}, [%rd17];
+	// in1__ar0 = load kt[a2, a1]
+	// f32 v3__ar0 = multiply(in1__ar0, in2__ar0)
+	// f32 acc0__ar0 <- add(acc0__ar0, v3__ar0)
+	fma.rn.f32	%f70, %f4, %f71, %f70;
+	// a2: trip 1 of 32
+	fma.rn.f32	%f70, %f5, %f72, %f70;
+	// a2: trip 2 of 32
+	fma.rn.f32	%f70, %f6, %f73, %f70;
+	// a2: trip 3 of 32
+	fma.rn.f32	%f70, %f7, %f74, %f70;
+	// a2: trip 4 of 32
+	ld.global.nc.v4.f32	{%f75, %f76, %f77, %f78}, [%rd17+16];
+	fma.rn.f32	%f70, %f8, %f75, %f70;
+	// a2: trip 5 of 32
+	fma.rn.f32	%f70, %f9, %f76, %f70;
+	// a2: trip 6 of 32
+	fma.rn.f32	%f70, %f10, %f77, %f70;
+	// a2: trip 7 of 32
+	fma.rn.f32	%f70, %f11, %f78, %f70;
+	// a2: trip 8 of 32
+	ld.global.nc.v4.f32	{%f79, %f80, %f81, %f82}, [%rd17+32];
+	fma.rn.f32	%f70, %f12, %f79, %f70;
+	// a2: trip 9 of 32
+	fma.rn.f32	%f70, %f13, %f80, %f70;
+	// a2: trip 10 of 32
+	fma.rn.f32	%f70, %f14, %f81, %f70;
+	// a2: trip 11 of 32
+	fma.rn.f32	%f70, %f15, %f82, %f70;
+	// a2: trip 12 of 32
+	ld.global.nc.v4.f32	{%f83, %f84, %f85, %f86}, [%rd17+48];
+	fma.rn.f32	%f70, %f16, %f83, %f70;
+	// a2: trip 13 of 32
+	fma.rn.f32	%f70, %f17, %f84, %f70;
+	// a2: trip 14 of 32
+	fma.rn.f32	%f70, %f18, %f85, %f70;
+	// a2: trip 15 of 32
+	fma.rn.f32	%f70, %f19, %f86, %f70;
+	// a2: trip 16 of 32
+	ld.global.nc.v4.f32	{%f87, %f88, %f89, %f90}, [%rd17+64];
+	fma.rn.f32	%f70, %f20, %f87, %f70;
+	// a2: trip 17 of 32
+	fma.rn.f32	%f70, %f21, %f88, %f70;
+	// a2: trip 18 of 32
+	fma.rn.f32	%f70, %f22, %f89, %f70;
+	// a2: trip 19 of 32
+	fma.rn.f32	%f70, %f23, %f90, %f70;
+	// a2: trip 20 of 32
+	ld.global.nc.v4.f32	{%f91, %f92, %f93, %f94}, [%rd17+80];
+	fma.rn.f32	%f70, %f24, %f91, %f70;
+	// a2: trip 21 of 32
+	fma.rn.f32	%f70, %f25, %f92, %f70;
+	// a2: trip 22 of 32
+	fma.rn.f32	%f70, %f26, %f93, %f70;
+	// a2: trip 23 of 32
+	fma.rn.f32	%f70, %f27, %f94, %f70;
+	// a2: trip 24 of 32
+	ld.global.nc.v4.f32	{%f95, %f96, %f97, %f98}, [%rd17+96];
+	fma.rn.f32	%f70, %f28, %f95, %f70;
+	// a2: trip 25 of 32
+	fma.rn.f32	%f70, %f29, %f96, %f70;
+	// a2: trip 26 of 32
+	fma.rn.f32	%f70, %f30, %f97, %f70;
+	// a2: trip 27 of 32
+	fma.rn.f32	%f70, %f31, %f98, %f70;
+	// a2: trip 28 of 32
+	ld.global.nc.v4.f32	{%f99, %f100, %f101, %f102}, [%rd17+112];
+	fma.rn.f32	%f70, %f32, %f99, %f70;
+	// a2: trip 29 of 32
+	fma.rn.f32	%f70, %f33, %f100, %f70;
+	// a2: trip 30 of 32
+	fma.rn.f32	%f70, %f34, %f101, %f70;
+	// a2: trip 31 of 32
+	fma.rn.f32	%f70, %f35, %f102, %f70;
+	// f32 v4__c0_0 = multiply(acc0__ar0, v1)
+	mul.rn.f32	%f103, %f70, %f0;
+	// f32 one__c0_0 = 1.0
+	// f32 v4__gn__c0_0 = maximum(acc1__c0_0, v4__c0_0)
+	max.f32	%f104, %f3, %f103;
+	// f32 v4__dg__c0_0 = subtract(acc1__c0_0, v4__gn__c0_0)
+	sub.rn.f32	%f105, %f3, %f104;
+	// f32 v4__alpha__c0_0 = exp(v4__dg__c0_0)
+	max.NaN.f32	%f107, %f105, 0fC2D00000;
+	min.NaN.f32	%f107, %f107, 0f42B20000;
+	mul.rn.f32	%f108, %f107, 0f3FB8AA3B;
+	neg.f32	%f109, %f108;
+	fma.rn.f32	%f110, %f107, 0f3FB8AA3B, %f109;
+	fma.rn.f32	%f110, %f107, 0f32A57060, %f110;
+	ex2.approx.ftz.f32	%f111, %f108;
+	mul.rn.f32	%f112, %f110, 0f3F317218;
+	fma.rn.f32	%f106, %f111, %f112, %f111;
+	// f32 v4__dg_o__c0_0 = subtract(v4__c0_0, v4__gn__c0_0)
+	sub.rn.f32	%f113, %f103, %f104;
+	// f32 v4__beta__c0_0 = exp(v4__dg_o__c0_0)
+	max.NaN.f32	%f115, %f113, 0fC2D00000;
+	min.NaN.f32	%f115, %f115, 0f42B20000;
+	mul.rn.f32	%f116, %f115, 0f3FB8AA3B;
+	neg.f32	%f117, %f116;
+	fma.rn.f32	%f118, %f115, 0f3FB8AA3B, %f117;
+	fma.rn.f32	%f118, %f115, 0f32A57060, %f118;
+	ex2.approx.ftz.f32	%f119, %f116;
+	mul.rn.f32	%f120, %f118, 0f3F317218;
+	fma.rn.f32	%f114, %f119, %f120, %f119;
+	// f32 v4__acc3_sa__c0_0 = multiply(acc3__c0_0, v4__alpha__c0_0)
+	mul.rn.f32	%f121, %f1, %f106;
+	// f32 v4__acc3_sb__c0_0 = multiply(one__c0_0, v4__beta__c0_0)
+	// f32 acc3__c0_0 <- add(v4__acc3_sa__c0_0, v4__acc3_sb__c0_0)
+	add.rn.f32	%f1, %f121, %f114;
+	// f32 v4__acc5__sum_sa__c0_0 = multiply(acc5__sum__c0_0, v4__alpha__c0_0)
+	mul.rn.f32	%f122, %f2, %f106;
+	// in7__bc0 = load v[a1, (((a5_b * 32) + (a5_u * 1)) + 0)]
+	// f32 v4__acc5__sum_sb__c0_0 = multiply(in7__bc0, v4__beta__c0_0)
+	// f32 acc5__sum__c0_0 <- add(v4__acc5__sum_sa__c0_0, v4__acc5__sum_sb__c0_0)
+	fma.rn.f32	%f2, %f36, %f114, %f122;
+	// f32 acc1__c0_0 <- maximum(acc1__c0_0, v4__c0_0)
+	max.f32	%f3, %f3, %f103;
+	mov.f32	%f4, %f37;
+	mov.f32	%f5, %f38;
+	mov.f32	%f6, %f39;
+	mov.f32	%f7, %f40;
+	mov.f32	%f8, %f41;
+	mov.f32	%f9, %f42;
+	mov.f32	%f10, %f43;
+	mov.f32	%f11, %f44;
+	mov.f32	%f12, %f45;
+	mov.f32	%f13, %f46;
+	mov.f32	%f14, %f47;
+	mov.f32	%f15, %f48;
+	mov.f32	%f16, %f49;
+	mov.f32	%f17, %f50;
+	mov.f32	%f18, %f51;
+	mov.f32	%f19, %f52;
+	mov.f32	%f20, %f53;
+	mov.f32	%f21, %f54;
+	mov.f32	%f22, %f55;
+	mov.f32	%f23, %f56;
+	mov.f32	%f24, %f57;
+	mov.f32	%f25, %f58;
+	mov.f32	%f26, %f59;
+	mov.f32	%f27, %f60;
+	mov.f32	%f28, %f61;
+	mov.f32	%f29, %f62;
+	mov.f32	%f30, %f63;
+	mov.f32	%f31, %f64;
+	mov.f32	%f32, %f65;
+	mov.f32	%f33, %f66;
+	mov.f32	%f34, %f67;
+	mov.f32	%f35, %f68;
+	mov.f32	%f36, %f69;
+	add.s32	%r12, %r12, 1;
+	setp.lt.s32	%p0, %r12, 128;
+	@%p0 bra	$L1_loop;
+$L1_loop_end:
+	// f32 v9__c0_0 = reciprocal(acc3__c0_0)
+	rcp.rn.f32	%f123, %f1;
+	// f32 acc5__c0_0 = multiply(acc5__sum__c0_0, v9__c0_0)
+	mul.rn.f32	%f124, %f2, %f123;
+	// matmul_1[(((a0_b * 1) + (a0_u * 1)) + 0), (((a5_b * 32) + (a5_u * 1)) + 0)] = acc5__c0_0
+	add.s32	%r19, %r14, %r18;
+	mul.wide.s32	%rd18, %r19, 4;
+	add.s64	%rd19, %rd9, %rd18;
+	st.global.f32	[%rd19], %f124;
+	ret;
+}

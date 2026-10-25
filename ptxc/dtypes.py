@@ -304,6 +304,13 @@ def _emit_int(b: PtxBuilder, op: str, dst: str, args: list[str], d: DType) -> No
         b.emit(f"mul.lo.s{w}", dst, args[0], args[0])
     elif op == "relu":
         b.emit(f"max.s{w}", dst, args[0], "0")
+    elif op in ("floor_divide", "remainder") and _power_of_two(args[1]):
+        # By 2^k, rounding down is an arithmetic shift and the remainder its low k bits.
+        k = int(args[1])
+        if op == "floor_divide":
+            b.emit(f"shr.s{w}", dst, args[0], k.bit_length() - 1)
+        else:
+            b.emit(f"and.b{w}", dst, args[0], k - 1)
     elif op in ("floor_divide", "remainder"):
         # torch: the quotient rounds down and the remainder takes the divisor's sign; PTX's
         # div and rem truncate toward zero, so fix both when the remainder and divisor differ in sign.
@@ -323,3 +330,8 @@ def _emit_int(b: PtxBuilder, op: str, dst: str, args: list[str], d: DType) -> No
             b.emit(f"add.s{w}", dst, dst, c, guard=fix)
     else:
         raise CompileError(f"{op} on {d.name} values is not supported")
+
+
+def _power_of_two(operand: str) -> bool:
+    """Whether an integer operand is an immediate 2^k, k >= 0."""
+    return operand.isdigit() and int(operand) > 0 and int(operand) & (int(operand) - 1) == 0
