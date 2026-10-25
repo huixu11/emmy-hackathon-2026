@@ -212,6 +212,12 @@ def to_memory(b: PtxBuilder, value: str, d: DType) -> str:
     return out
 
 
+def store_type(d: DType) -> DType:
+    """The dtype a value goes to to_memory in for a buffer of d: a 16-bit float stays f32 and
+    rounds once, in the store's own conversion."""
+    return F32 if d.is_half else d
+
+
 def atomic_add(d: DType) -> str:
     """The red opcode suffix of an atomic add of dtype d."""
     suffix = {"f32": "add.f32", "f64": "add.f64", "i32": "add.s32", "i64": "add.u64", "f16": "add.noftz.f16"}

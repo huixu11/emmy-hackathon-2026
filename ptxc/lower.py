@@ -26,6 +26,7 @@ from .index import ZERO, IndexCompiler, Lin
 from .kernel import Kernel
 from .ptx import Mark, PtxBuilder, address, is_register, render_module, vector
 from .scope import Scopes
+from .tensorcore import FRAGMENT_FIELDS, TensorCores
 from .vectorize import vectorize_loads
 
 _F32_BYTES = 4
@@ -60,7 +61,7 @@ class SharedArray:
         return math.prod(self.extents) * self.dtype.nbytes
 
 
-class KernelLowering:
+class KernelLowering(TensorCores):
     def __init__(self, kernel: Kernel) -> None:
         self.kernel = kernel
         self.b = PtxBuilder()
@@ -83,6 +84,7 @@ class KernelLowering:
         self._copies: dict[str, str] = {}
         self._followed: set[str] = set()
         self._types: dict[str, dt.DType] = {}  # value name -> its dtype (f32 when not listed)
+        self._frags: dict[str, list[list[str]]] = {}  # fragment array -> registers of each fragment
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -300,6 +302,11 @@ class KernelLowering:
             self._merged[id(body)] = self._seed_accumulators(body, self._equal_accumulators(body))
         trips = self._trip_range(start, end, step)
         if trips == (0, 0):
+            return
+        if _indexes_fragments(var, body):  # registers cannot be indexed at run time
+            if trips is None or trips[0] != trips[1] or step.reg is not None:
+                raise CompileError(f"loop {var!r} over fragments needs the same constant trip count on every thread")
+            self._unrolled(var, start, step.const, trips[0], body)
             return
         has_loop = any(isinstance(node, (Loop, StridedLoop)) for node in _walk(body))
         size = sum(1 for _ in _straight_line(body))
@@ -803,7 +810,7 @@ class KernelLowering:
         if str(write.swizzle) != "NONE":
             raise CompileError(f"swizzled writes ({write.swizzle}) are not supported")
         d = self._buffer_dtype(write.output)
-        values = [dt.to_memory(self.b, self._value(name, d), d) for name in write.values]
+        values = [dt.to_memory(self.b, self._value(name, dt.store_type(d)), d) for name in write.values]
         flat = self._flat(write.output, write.index)
         widths = [1] * len(values) if write.atomic else _vector_widths(len(values), d)
         pos = 0
@@ -821,9 +828,10 @@ class KernelLowering:
         pass  # laid out up front by _plan_shared
 
     def visit_CpAsyncCopy(self, copy) -> None:
-        """One asynchronous global -> shared copy of 4, 8 or 16 bytes (16: .cg, bypassing L1)."""
-        if str(copy.swizzle) != "NONE":
-            raise CompileError(f"swizzled cp.async ({copy.swizzle}) is not supported")
+        """One asynchronous global -> shared copy of 4, 8 or 16 bytes (16: .cg, bypassing L1),
+        to the swizzled place of its first element when the array is swizzled (tensorcore.py)."""
+        if str(copy.swizzle) != "NONE" and self.shared[copy.smem].dtype.nbytes != 2:
+            raise CompileError(f"swizzled cp.async ({copy.swizzle}) into a non-16-bit array")
         if copy.nbytes not in (4, 8, 16):
             raise CompileError(f"cp.async of {copy.nbytes} bytes")
         flat = self._flat(copy.smem, copy.smem_index)
@@ -831,7 +839,7 @@ class KernelLowering:
             row, col = (self.idx.value(e) for e in copy.lane_index)
             cols = Lin(None, self.shared[copy.smem].extents[-1])
             flat = self.idx.add(flat, self.idx.add(self.idx.mul(row, cols), col))
-        _, dst = self._address(copy.smem, flat)
+        _, dst = self._address(copy.smem, self._swizzle(flat, copy.swizzle))
         _, src = self._address(copy.src, self._flat(copy.src, copy.src_index))
         self.b.emit(f"cp.async.{'cg' if copy.nbytes == 16 else 'ca'}.shared.global", dst, src, copy.nbytes)
 
@@ -1000,6 +1008,13 @@ def _require_f32_held(dtype, what: str) -> None:
     """Cross-thread combines move 32-bit registers: f32, and the 16-bit floats held in f32."""
     if dt.dtype(dtype).reg != "f32":
         raise CompileError(f"{what}: dtype {getattr(dtype, 'name', dtype)} is not supported")
+
+
+def _indexes_fragments(var: str, body) -> bool:
+    """Whether a loop body indexes a fragment array with the loop variable (`_b[_r0]`)."""
+    index = f"[{var}]"
+    return any(isinstance(getattr(node, f, None), str) and index in getattr(node, f)
+               for node in _walk(body) for f in FRAGMENT_FIELDS)
 
 
 def _statements(body) -> Iterator:
