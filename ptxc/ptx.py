@@ -6,6 +6,7 @@ every value simply gets a fresh register and the counts are declared at the top 
 
 from __future__ import annotations
 
+import re
 import struct
 from collections import Counter
 from dataclasses import dataclass
@@ -36,6 +37,12 @@ def f64_imm(value: float) -> str:
 
 def is_register(operand: str) -> bool:
     return operand.startswith("%")
+
+
+def register_class(reg: str) -> str | None:
+    """The class of a virtual register ("f32" for %f3, "b64" for %rd7), None for anything else."""
+    m = re.fullmatch(r"(%[a-z]+)\d+", reg)
+    return next((cls for cls, (prefix, _) in REG_CLASSES.items() if m and prefix == m.group(1)), None)
 
 
 def address(base: str, offset: int = 0) -> str:

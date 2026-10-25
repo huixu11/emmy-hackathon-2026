@@ -25,12 +25,11 @@ from .facts import Fact
 from .fmath import ONE
 from .index import ZERO, IndexCompiler, Lin
 from .kernel import Kernel
-from .ptx import Mark, PtxBuilder, address, is_register, render_module, vector
+from .ptx import Mark, PtxBuilder, address, is_register, register_class, render_module, vector
 from .scope import Scopes
 from .tensorcore import FRAGMENT_FIELDS, TensorCores
 from .vectorize import vectorize_loads
 
-_F32_BYTES = 4
 _STATIC_SMEM_LIMIT = 48 * 1024  # larger shared memory must be the launch's dynamic allocation
 _SMEM_POOL = "sh_pool"
 _GLOBAL_ALIGN = 16  # buffer base alignment; the IR's own v4 accesses rely on at least this
@@ -77,7 +76,7 @@ class KernelLowering(TensorCores):
         self._in_loop = False  # inside the body of a loop emitted as a real loop
         self._trips: list[tuple[str, int]] = []  # (variable, trip) of the unrolled copies being emitted
         # Load site -> registers that already hold its values (see _prefetch_plan).
-        self._prefetched: dict[tuple, list[str]] | None = None
+        self._prefetched: dict[tuple, tuple[list[str], dt.DType]] | None = None
         # Accumulators computed once for the copies that always equal them
         # (_equal_accumulators): loop body -> {copy: the accumulator it equals}; and, while a
         # trip is emitted, its copies and the accumulators they follow.
@@ -483,13 +482,14 @@ class KernelLowering(TensorCores):
                 # alike in every trip. An address match alone could hold for one value only.
                 same = (stmt.input, repr(stmt.index), tuple((n, repr(self.scopes.lookup(n))) for n in names))
                 if same not in loaded:
+                    d = self._buffer_dtype(stmt.input)
                     flat = self._flat(stmt.input, stmt.index)
                     regs, pos = [], 0
-                    for width in _vector_widths(len(stmt.names)):
+                    for width in _vector_widths(len(stmt.names), d):
                         _, addr = self._address(stmt.input, Lin(flat.reg, flat.const + pos))
-                        regs += self._load(f"ld.global.nc{_vec(width)}.f32", addr, width)
+                        regs += self._load(f"ld.global.nc{_vec(width)}.{d.mem}", addr, width, d)
                         pos += width
-                    loaded[same] = regs
+                    loaded[same] = (regs, d)
                 sites[id(stmt), tuple(self._trips)] = loaded[same]
 
     def _emit_counted_loop(self, var: str, start: Lin, end: Lin, step: Lin, body, factor: int, uniform: bool,
@@ -549,11 +549,11 @@ class KernelLowering(TensorCores):
                 self._prefetched = None
             if prefetch:
                 moved: set[str] = set()
-                for site, regs in current.items():
-                    for reg, value in zip(regs, upcoming[site]):
+                for site, (regs, d) in current.items():
+                    for reg, value in zip(regs, upcoming[site][0]):
                         if reg not in moved:
                             moved.add(reg)
-                            self.b.emit("mov.f32", reg, value)
+                            dt.move(self.b, reg, value, d)
         again = self.b.reg("pred")
         self.b.emit("add.s32", counter, counter, step * factor if factor > 1 else step)
         self.b.emit("setp.lt.s32", again, counter, bound)
@@ -680,6 +680,8 @@ class KernelLowering(TensorCores):
         comparison compares in the type its arguments meet in). A bool lives in an f32 register
         as 1.0 / 0.0, the representation the comparison and logic ops produce and `where` tests."""
         d = dt.dtype(assign.dtype)
+        if assign.dtype is None and self._type(assign.name).reg != "f32":
+            d = self._type(assign.name)  # an untyped update (a combine step) keeps the name's dtype
         op = assign.op.name
         self._types[assign.name] = d
         if op in dt.COMPARISONS:
@@ -777,9 +779,9 @@ class KernelLowering(TensorCores):
                     self.scopes.define(name, dt.immediate(value, d))
             return
         if self._prefetched is not None and all(self.scopes.find(n) is None for n in load.names):
-            regs = self._prefetched.get((id(load), tuple(self._trips)))
-            if regs is not None:  # loaded by the trip before
-                for name, reg in zip(load.names, regs):
+            hit = self._prefetched.get((id(load), tuple(self._trips)))
+            if hit is not None:  # loaded by the trip before
+                for name, reg in zip(load.names, hit[0]):
                     self.scopes.define(name, reg)
                 return
         flat = self._flat(load.input, load.index)
@@ -867,7 +869,6 @@ class KernelLowering(TensorCores):
     def visit_WarpShuffle(self, ws) -> None:
         """XOR butterfly: at distance length/2, ..., 2, 1 every lane fetches its partner's
         states (named state_b) and folds them into its own with the combine program."""
-        _require_f32_held(ws.dtype, "WarpShuffle")
         mask = self.b.reg("b32")
         self.b.emit("activemask.b32", mask)
         distance = ws.length // 2
@@ -875,18 +876,32 @@ class KernelLowering(TensorCores):
             self.b.comment(f"butterfly distance {distance}")
             with self.scopes.nested():
                 for state, partner in zip(ws.state, ws.state_b):
-                    self._types[partner] = self._type(state)
-                    self.b.emit("shfl.sync.bfly.b32", self._define_new(partner),
-                                self._operand(state), distance, "0x1f", mask)
+                    d = self._type(state)
+                    self._types[partner] = d
+                    self.scopes.define(partner, self._shuffle(self._in_register(state, d), distance, mask, d))
                 self._stmts(ws.combine_states, annotate=False)
             distance //= 2
+
+    def _shuffle(self, value: str, distance: int, mask: str, d: dt.DType) -> str:
+        """`value` of the lane `distance` away (xor): one shfl for a 32-bit register, one per
+        half for a 64-bit one (f64, i64)."""
+        if d.reg in ("f32", "b32"):
+            out = self.b.reg(d.reg)
+            self.b.emit("shfl.sync.bfly.b32", out, value, distance, "0x1f", mask)
+            return out
+        halves = [self.b.reg("b32") for _ in range(4)]
+        self.b.emit("mov.b64", "{" + f"{halves[0]}, {halves[1]}" + "}", value)
+        for got, half in zip(halves[2:], halves[:2]):
+            self.b.emit("shfl.sync.bfly.b32", got, half, distance, "0x1f", mask)
+        out = self.b.reg(d.reg)
+        self.b.emit("mov.b64", out, "{" + f"{halves[2]}, {halves[3]}" + "}")
+        return out
 
     def visit_TreeHalve(self, tree) -> None:
         """Fold `length` partials kept in shared memory (one per warp): at stride s = length/2,
         ..., 1 entry i < s combines entry i + s into itself; then every thread reads entry 0."""
         if tree.inner is not None:
             raise CompileError("TreeHalve with an inner tree is not supported")
-        _require_f32_held(tree.dtype, "TreeHalve")
         tid = self.scopes.lookup(tree.tid_var)
         arrays = [self.shared[buf] for buf in tree.bufs]
         stride = tree.length // 2
@@ -897,22 +912,32 @@ class KernelLowering(TensorCores):
             (skip,) = self.b.labels("tree_skip")
             self.b.emit("bra", skip, guard="!" + active)
             with self.scopes.nested(hoist=before):
-                mine = self.idx.shared_address
                 for array, state, partner in zip(arrays, tree.state, tree.state_b):
-                    self._types[partner] = self._type(state)
-                    self.b.emit("ld.shared.f32", self._define_new(state),
-                                mine(array.symbol, tid, _F32_BYTES))
-                    self.b.emit("ld.shared.f32", self._define_new(partner),
-                                mine(array.symbol, Lin(tid.reg, tid.const + stride), _F32_BYTES))
+                    d = self._type(state)
+                    self._types[partner] = d
+                    self.scopes.define(state, self._from_shared(array, tid, 0, d))
+                    self.scopes.define(partner, self._from_shared(array, tid, stride, d))
                 self._stmts(tree.combine_states, annotate=False)
                 for array, state in zip(arrays, tree.state):
-                    self.b.emit("st.shared.f32", mine(array.symbol, tid, _F32_BYTES),
-                                self._operand(state))
+                    a = array.dtype
+                    value = dt.to_memory(self.b, self._in_register(state, dt.store_type(a)), a)
+                    self.b.emit(f"st.shared.{a.mem}", self.idx.shared_address(array.symbol, tid, a.nbytes), value)
             self.b.place(skip)
             self._barrier(tree.barrier_id, tree.barrier_count)
             stride //= 2
         for array, state in zip(arrays, tree.state):
-            self.b.emit("ld.shared.f32", self._register(state), address(array.symbol))
+            d = self._type(state)
+            if array.dtype == d and d.mem_reg == d.reg:  # straight into the state's register
+                self.b.emit(f"ld.shared.{d.mem}", self._register(state, d), address(array.symbol))
+            else:
+                dt.move(self.b, self._register(state, d), self._from_shared(array, Lin(None, 0), 0, d), d)
+
+    def _from_shared(self, array, index: Lin, offset: int, d: dt.DType) -> str:
+        """Entry index + offset of a shared array, as dtype d."""
+        a = array.dtype
+        addr = self.idx.shared_address(array.symbol, Lin(index.reg, index.const + offset), a.nbytes)
+        (value,) = self._load(f"ld.shared.{a.mem}", addr, 1, a)
+        return dt.convert(self.b, value, a, d)
 
     # ---- names and memory ------------------------------------------------------------------
 
@@ -944,6 +969,8 @@ class KernelLowering(TensorCores):
             return self._define_new(name, d)
         if not (isinstance(value, str) and is_register(value)):
             raise CompileError(f"cannot assign to {name!r}")
+        if register_class(value) != d.reg:
+            raise CompileError(f"{name!r} holds a {self._type(name).name} value; writing it as {d.name} is not supported")
         return value
 
     def _define_new(self, name: str, d: dt.DType = dt.F32) -> str:
@@ -1005,12 +1032,6 @@ def _vector_widths(n: int, d: dt.DType = dt.F32) -> list[int]:
         return [n]
     width = 4 if n % 4 == 0 else 2 if n % 2 == 0 else 1
     return [width] * (n // width)
-
-
-def _require_f32_held(dtype, what: str) -> None:
-    """Cross-thread combines move 32-bit registers: f32, and the 16-bit floats held in f32."""
-    if dt.dtype(dtype).reg != "f32":
-        raise CompileError(f"{what}: dtype {getattr(dtype, 'name', dtype)} is not supported")
 
 
 def _indexes_fragments(var: str, body) -> bool:
