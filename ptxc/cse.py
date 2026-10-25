@@ -1,4 +1,5 @@
-"""Drop recomputed divisions, reciprocals and square roots: a pass over the finished instruction stream.
+"""Drop recomputed divisions, reciprocals and square roots, and f64 round trips of f32 values:
+a pass over the finished instruction stream.
 
 Emmy repeats pure scalar work per output fragment, e.g. attention's epilogue takes the
 reciprocal of each row's sum once per 16x8 tile it stores:
@@ -13,6 +14,11 @@ writes a source of the first or reads the second's result, and each result regis
 written by no other instruction (so %f900 still holds the value wherever %f940 was read).
 Merging the cheap ops here as well gives the same SASS, and moved one small attention
 kernel's schedule from 4.8 to 6.8 us, so they are left to ptxas.
+
+Under the same conditions, narrowing an f64 that widened an f32 (`cvt.f64.f32 %fd4, %f9` then
+`cvt.rn.f32.f64 %f12, %fd4`) gives back %f9 exactly, so %f12 becomes %f9. Emmy's f64 kernels
+do that for every element: `exp` is taken in f32 and widened to the f64 value the IR names,
+which an f32 accumulator then narrows again; ptxas keeps both conversions.
 """
 
 from __future__ import annotations
@@ -33,10 +39,12 @@ def eliminate_common_subexpressions(lines: list) -> list:
     rename: dict[str, str] = {}
     keep = []
     seen: dict[tuple, tuple[str, int]] = {}  # (opcode, sources) -> (result, position in keep)
+    widened: dict[str, tuple[str, int]] = {}  # f64 register -> (the f32 it widened, position)
     for line in lines:
         if not isinstance(line, Instr):
             if line.endswith(":"):  # a label starts a new basic block
                 seen.clear()
+                widened.clear()
             keep.append(line)
             continue
         if rename:
@@ -44,6 +52,8 @@ def eliminate_common_subexpressions(lines: list) -> list:
         key = (line.opcode, *line.operands[1:])
         dst = line.operands[0] if line.operands else None
         earlier = seen.get(key) if _mergeable(line, writes) else None
+        if line.opcode == "cvt.rn.f32.f64" and _single(line, writes):
+            earlier = widened.get(line.operands[1])
         if earlier is not None and not _reads_since(keep, earlier[1], dst):
             rename[dst] = earlier[0]
             continue
@@ -53,10 +63,18 @@ def eliminate_common_subexpressions(lines: list) -> list:
                     if v[0] not in written and not any(r in written for r in _sources(k))}
         if line.opcode.startswith(("bra", "ret")):
             seen.clear()
+            widened.clear()
         elif _mergeable(line, writes):
             seen[key] = (dst, len(keep))
+        elif line.opcode == "cvt.f64.f32" and _single(line, writes) and writes[line.operands[1]] == 1:
+            widened[dst] = (line.operands[1], len(keep))
         keep.append(line)
     return keep
+
+
+def _single(line: Instr, writes: Counter) -> bool:
+    """An unguarded instruction whose result register no other instruction writes."""
+    return line.guard is None and _REG.fullmatch(line.operands[0]) is not None and writes[line.operands[0]] == 1
 
 
 def _mergeable(line: Instr, writes: Counter) -> bool:

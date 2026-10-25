@@ -62,8 +62,11 @@ class SharedArray:
 
 
 class KernelLowering(TensorCores):
-    def __init__(self, kernel: Kernel) -> None:
+    def __init__(self, kernel: Kernel, unroll_scale: float = 1.0) -> None:
         self.kernel = kernel
+        # The unrolling budgets below are multiplied by this; compile_file lowers it when the
+        # PTX would not fit the runner (0: only what the IR asks for or fragments need).
+        self.unroll_scale = unroll_scale
         self.b = PtxBuilder()
         self.scopes = Scopes()
         self.idx = IndexCompiler(self.b, self.scopes)
@@ -322,7 +325,8 @@ class KernelLowering(TensorCores):
             # load in vectors, and unrolled it measured up to 1.9x slower. So does attention on
             # tensor cores, whose trips each hold dozens of fragments: unrolled, they spill.
             if (has_loop and not self._in_loop and n <= _FULL_UNROLL_TRIPS
-                    and n * _expanded_size(body) <= _OUTER_UNROLL_BUDGET and not _streams_rows(var, body)
+                    and n * _expanded_size(body) <= _OUTER_UNROLL_BUDGET * self.unroll_scale
+                    and not _streams_rows(var, body)
                     and not any(isinstance(node, FragmentRowReduce) for node in _walk(body))):
                 self._unrolled(var, start, step.const, n, body)
                 return
@@ -333,18 +337,18 @@ class KernelLowering(TensorCores):
             # turns a column walk into .v4 loads.
             ours = start.reg is not None or self._reads_shared(body) or not self._in_loop
             factor = 1 if has_loop or not ours else next(
-                (f for f in (8, 4, 2) if n % f == 0 and f * size <= _PARTIAL_UNROLL_BUDGET), 1)
+                (f for f in (8, 4, 2) if n % f == 0 and f * size <= _PARTIAL_UNROLL_BUDGET * self.unroll_scale), 1)
             self._counted_loop(var, start, end, step, body, factor, uniform=True)
         elif trips is not None and trips[1] == 1:
             self._at_most_once(var, start, end, body)
         else:
             constant = end.reg is None and step.reg is None
-            factor = 4 if constant and not has_loop and 4 * size <= _PARTIAL_UNROLL_BUDGET else 1
+            factor = 4 if constant and not has_loop and 4 * size <= _PARTIAL_UNROLL_BUDGET * self.unroll_scale else 1
             self._counted_loop(var, start, end, step, body, factor, uniform=False)
 
     def _unrolls(self, n: int, size: int, has_loop: bool, unroll: bool) -> bool:
         """Whether a loop of n trips on every thread, `size` statements, becomes n copies."""
-        budget = _UNROLL_BUDGET if unroll else _IMPLICIT_UNROLL_BUDGET
+        budget = (_UNROLL_BUDGET if unroll else _IMPLICIT_UNROLL_BUDGET) * self.unroll_scale
         wanted = unroll or (self._unroll_room and n <= _FULL_UNROLL_TRIPS)
         return n == 1 or (not has_loop and wanted and n * size <= budget)
 
@@ -402,7 +406,8 @@ class KernelLowering(TensorCores):
         """A real loop, `factor` trips per iteration; then, unless every thread's trip count is
         a multiple of the factor, a loop of single trips for the rest. Tested at the bottom."""
         saved = self._unroll_room, self._in_loop
-        self._unroll_room = _expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET or _streams_rows(var, body)
+        self._unroll_room = (_expanded_size(body) <= _ENCLOSING_UNROLL_BUDGET * self.unroll_scale
+                             or _streams_rows(var, body))
         self._in_loop = True
         try:
             last = None
@@ -739,6 +744,20 @@ class KernelLowering(TensorCores):
         if target is None:
             return
         dst, base = target
+        held = self._type(acc.name)
+        # An accumulator held in another dtype (an f64 max that an f32 statement merges) folds
+        # in the statement's dtype, and the result goes back converted.
+        if register_class(dst) != d.reg:
+            if register_class(dst) != held.reg:
+                raise CompileError(f"accumulator {acc.name!r} is held in an unknown dtype")
+            if not acc.base:
+                base = dt.convert(self.b, base, held, d)
+            raw = self.b.reg(d.reg)
+            dt.emit(self.b, acc.op.name, raw, [base, value], d)
+            if d.is_half:
+                raw = dt.round_to(self.b, raw, d)
+            dt.move(self.b, dst, dt.convert(self.b, raw, d, held), held)
+            return
         if not d.is_half:
             dt.emit(self.b, acc.op.name, dst, [base, value], d)
             return
@@ -760,8 +779,8 @@ class KernelLowering(TensorCores):
             raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
         d = dt.dtype(acc.dtype)
         base = self._value(acc.base, d) if acc.base else dst
-        if acc.name in self._followed:
-            dst = self.b.reg(d.reg)
+        if acc.name in self._followed:  # a fresh register of the accumulator's own class
+            dst = self.b.reg(register_class(dst) or d.reg)
             self.scopes.define(acc.name, dst)
         return dst, base
 

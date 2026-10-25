@@ -189,9 +189,10 @@ class TensorCores:
 
     def visit_RegStore(self, st) -> None:
         """Store a C fragment: lane (g, t) writes rows g, g + 8 and columns 2t, 2t + 1 of the
-        16x8 tile at dst_index, after the optional epilogue, converted to the buffer's dtype."""
-        if st.atomic or st.volta_interleaved or str(st.swizzle) != "NONE" or st.extra_frags:
-            raise CompileError("atomic, swizzled, interleaved or multi-fragment stores are not supported")
+        16x8 tile at dst_index, after the optional epilogue, converted to the buffer's dtype.
+        An atomic store (split K: each block's partial sum) adds each value with red.add."""
+        if st.volta_interleaved or str(st.swizzle) != "NONE" or st.extra_frags:
+            raise CompileError("swizzled, interleaved or multi-fragment stores are not supported")
         if st.fragment_layout != "m16n8k16":
             raise CompileError(f"fragment layout {st.fragment_layout} is not supported")
         regs = self._fragment(st.frag)
@@ -220,7 +221,10 @@ class TensorCores:
                 where[cdim] = self.idx.add(where[cdim], c_off)
                 guard = self._store_guard(m_bound, r_off, n_bound, c_off)
                 cells.append((self._flat_lin(where, shape), dt.to_memory(self.b, value, d), guard))
-            self._store_pair(st.dst_buffer, cells, d)
+            if st.atomic:
+                self._add_cells(st.dst_buffer, cells, d)
+            else:
+                self._store_pair(st.dst_buffer, cells, d)
 
     def _store_guard(self, m_bound, r_off: Lin, n_bound, c_off: Lin) -> bool | str:
         guard: bool | str = True
@@ -254,6 +258,13 @@ class TensorCores:
                 continue
             space, addr = self._address(buffer, flat)
             self.b.emit(f"st.{space}.{d.mem}", addr, value, guard=None if guard is True else guard)
+
+    def _add_cells(self, buffer: str, cells: list, d: dt.DType) -> None:
+        """One red.add per value, under its guard (no vector form before sm_90)."""
+        for flat, value, guard in cells:
+            if guard is not False:
+                space, addr = self._address(buffer, flat)
+                self.b.emit(f"red.{space}.{dt.atomic_add(d)}", addr, value, guard=None if guard is True else guard)
 
     def _epilogue(self, fn, value: str, r_off: Lin, c_off: Lin, d: dt.DType) -> str:
         """The store's pointwise tail on one element: its parameters are the element (f32),
