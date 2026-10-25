@@ -80,8 +80,11 @@ def load_kernel(ir_path: Path) -> Kernel:
     return Kernel(op.name, op.body, params, buffers, grid, block, smem, constants)
 
 
+_CONSTANT_DTYPES = ("f32", "f16", "bf16", "f64", "i32", "i64")
+
+
 def _constants(raw: dict, buffers: dict[str, Buffer], launch: dict | None) -> dict[str, float]:
-    """Buffer name -> value of each one-element f32 ConstantOp. The launch still passes the
+    """Buffer name -> value of each one-element numeric ConstantOp. The launch still passes the
     buffer; a value that meta.json gives differently is left to be read at run time."""
     data = {a["name"]: a.get("data") for a in (launch or {}).get("args", [])}
     constants = {}
@@ -91,7 +94,7 @@ def _constants(raw: dict, buffers: dict[str, Buffer], launch: dict | None) -> di
             continue
         name = node["outputs"][0]["name"]
         buf = buffers[name]
-        if (isinstance(value, (int, float)) and buf.dtype == "f32" and math.prod(buf.shape) == 1
+        if (isinstance(value, (int, float)) and buf.dtype in _CONSTANT_DTYPES and math.prod(buf.shape) == 1
                 and data.get(name) in (None, [value])):
             constants[name] = float(value)
     return constants

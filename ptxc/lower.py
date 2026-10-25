@@ -18,17 +18,17 @@ from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Select, SelectBranch, Write
 
+from . import dtypes as dt
 from .errors import CompileError
 from .facts import Fact
-from .fmath import ONE, emit_elementwise
+from .fmath import ONE
 from .index import ZERO, IndexCompiler, Lin
 from .kernel import Kernel
-from .ptx import Mark, PtxBuilder, address, f32_imm, is_register, render_module, vector
+from .ptx import Mark, PtxBuilder, address, is_register, render_module, vector
 from .scope import Scopes
 from .vectorize import vectorize_loads
 
 _F32_BYTES = 4
-_SMEM_DTYPES = {"float": "f32"}
 _STATIC_SMEM_LIMIT = 48 * 1024  # larger shared memory must be the launch's dynamic allocation
 _SMEM_POOL = "sh_pool"
 _GLOBAL_ALIGN = 16  # buffer base alignment; the IR's own v4 accesses rely on at least this
@@ -53,10 +53,11 @@ class SharedArray:
     offset: int
     extents: tuple[int, ...]
     align: int
+    dtype: dt.DType = dt.F32
 
     @property
     def nbytes(self) -> int:
-        return math.prod(self.extents) * _F32_BYTES
+        return math.prod(self.extents) * self.dtype.nbytes
 
 
 class KernelLowering:
@@ -81,6 +82,7 @@ class KernelLowering:
         self._merged: dict[int, dict[str, str]] = {}
         self._copies: dict[str, str] = {}
         self._followed: set[str] = set()
+        self._types: dict[str, dt.DType] = {}  # value name -> its dtype (f32 when not listed)
         # How often each name appears anywhere in the kernel, definitions included.
         self._name_counts = Counter(leaf for node in _walk(kernel.body)
                                     for leaf in _string_leaves(node))
@@ -118,19 +120,19 @@ class KernelLowering:
         smems: dict[str, object] = {}
         for node in _walk(self.kernel.body):
             if isinstance(node, Smem):
-                if _SMEM_DTYPES.get(node.dtype) != "f32":
-                    raise CompileError(f"shared array {node.name!r} of type {node.dtype} is not supported")
                 smems.setdefault(node.name, node)
         layout, end = [], 0
         for smem in smems.values():
-            align = max(smem.align, _F32_BYTES)
+            esize = dt.dtype(smem.dtype).nbytes
+            align = max(smem.align, esize)
             offset = -(-end // align) * align
             layout.append((smem, offset, align))
-            end = offset + math.prod(smem.extents) * _F32_BYTES
+            end = offset + math.prod(smem.extents) * esize
 
         if end <= _STATIC_SMEM_LIMIT:
             for smem, _, align in layout:
-                self.shared[smem.name] = SharedArray(f"sh_{smem.name}", 0, tuple(smem.extents), align)
+                self.shared[smem.name] = SharedArray(f"sh_{smem.name}", 0, tuple(smem.extents), align,
+                                                     dt.dtype(smem.dtype))
                 self.idx.assume(f"sh_{smem.name}", Fact(div=align))
             return [f".shared .align {a.align} .b8 {a.symbol}[{a.nbytes}];" for a in self.shared.values()]
 
@@ -140,7 +142,8 @@ class KernelLowering:
         pool_align = max(align for _, _, align in layout)
         self.idx.assume(_SMEM_POOL, Fact(div=pool_align))
         for smem, offset, align in layout:
-            self.shared[smem.name] = SharedArray(_SMEM_POOL, offset, tuple(smem.extents), align)
+            self.shared[smem.name] = SharedArray(_SMEM_POOL, offset, tuple(smem.extents), align,
+                                                 dt.dtype(smem.dtype))
         return [f".extern .shared .align {pool_align} .b8 {_SMEM_POOL}[];  // {end} bytes, dynamic"]
 
     def _alignment(self, operand: str) -> int:
@@ -173,10 +176,11 @@ class KernelLowering:
         contracts the reference's `acc += a * b` and online softmax's `acc * alpha + v * beta`."""
         return (isinstance(stmt, Assign) and stmt.op.name == "multiply"
                 and isinstance(after, Accum) and after.op.name == "add" and after.value == stmt.name
+                and dt.dtype(stmt.dtype) == dt.dtype(after.dtype) == dt.F32
+                and all(self._type(a) == dt.F32 for a in stmt.args)
                 and self._name_counts[stmt.name] == 2)  # its definition and this one use
 
     def _fma(self, product, acc) -> None:
-        _require_f32(product.dtype, product.name)
         a, c = (self._operand(name) for name in product.args)
         target = self._accumulator(acc)
         if target is None:
@@ -356,7 +360,7 @@ class KernelLowering:
         saved = self._copies, self._followed
         with self.scopes.nested(hoist=hoist or self.b.mark()):
             self.scopes.define(var, value)
-            carried = {name: self.scopes.lookup(name) for name in set(merged.values())}
+            carried = {name: self.scopes.lookup(name) for name in dict.fromkeys(merged.values())}
             self._copies, self._followed = {**saved[0], **merged}, saved[1] | set(carried)
             try:
                 self._stmts(body, annotate=annotate)
@@ -557,11 +561,13 @@ class KernelLowering:
             if isinstance(stmt, Accum):
                 if stmt.op.identity is None:
                     raise CompileError(f"accumulator {stmt.name!r}: {stmt.op.name} has no identity")
+                d = dt.dtype(stmt.dtype)
+                self._types[stmt.name] = d
                 if stmt.name in same and self.scopes.find(stmt.name) is None:
                     self.scopes.define(stmt.name, self.scopes.lookup(same[stmt.name]))
                     merged[stmt.name] = same[stmt.name]
                 else:
-                    self.b.emit("mov.f32", self._register(stmt.name), f32_imm(stmt.op.identity))
+                    dt.move(self.b, self._register(stmt.name, d), dt.immediate(stmt.op.identity, d), d)
         return merged
 
     def _equal_accumulators(self, body) -> dict[str, str]:
@@ -586,7 +592,8 @@ class KernelLowering:
             defined.update(_defined(stmt))
         folds = [s for s in body if isinstance(s, Accum) and defined[s.name] == 1 and s.op.identity is not None]
         identities: dict[str, int] = {}
-        cls = {s.name: identities.setdefault(repr(float(s.op.identity)), len(identities)) for s in folds}
+        cls = {s.name: identities.setdefault((repr(float(s.op.identity)), dt.dtype(s.dtype).name), len(identities))
+               for s in folds}
         while True:
             values = self._value_numbers(body, cls)
             keys: dict[tuple, int] = {}
@@ -608,7 +615,7 @@ class KernelLowering:
 
         for stmt in body:
             if isinstance(stmt, Assign):
-                tokens[stmt.name] = (stmt.op.name, *map(of, stmt.args))
+                tokens[stmt.name] = (stmt.op.name, dt.dtype(stmt.dtype).name, *map(of, stmt.args))
             elif isinstance(stmt, Let):
                 tokens[stmt.name] = ("let", repr(stmt.value), *map(of, sorted(_names_used(stmt.value))))
             elif (isinstance(stmt, Load) and stmt.input not in self.shared
@@ -617,7 +624,8 @@ class KernelLowering:
                 for k, name in enumerate(stmt.names):
                     tokens[name] = (*where, k)
             elif isinstance(stmt, Accum) and stmt.name in cls:
-                tokens[stmt.name] = ("fold", stmt.op.name, of(stmt.base or stmt.name), of(stmt.value))
+                tokens[stmt.name] = ("fold", stmt.op.name, dt.dtype(stmt.dtype).name, of(stmt.base or stmt.name),
+                                     of(stmt.value))
             else:  # values this does not follow: each its own
                 for inner in _statements((stmt,)):
                     for name in _defined(inner):
@@ -645,47 +653,86 @@ class KernelLowering:
     # ---- scalar compute --------------------------------------------------------------------
 
     def visit_Let(self, let) -> None:
-        if _is_float(let.dtype):
-            self.scopes.define(let.name, f32_imm(float(let.value.value)))
-        else:
+        d = dt.dtype(let.dtype) if let.dtype is not None else None
+        if d is not None and not d.is_int and isinstance(let.value, Literal):
+            self._types[let.name] = d
+            self.scopes.define(let.name, dt.immediate(float(let.value.value), d))
+        else:  # an integer: an index value, which data arithmetic reads as i32
             self.scopes.define(let.name, self.idx.value(let.value))
 
     def visit_Init(self, init) -> None:
-        _require_f32(init.dtype, init.name)
-        self.b.emit("mov.f32", self._register(init.name), f32_imm(float(init.identity)))
+        d = dt.dtype(init.dtype)
+        self._types[init.name] = d
+        dt.move(self.b, self._register(init.name, d), dt.immediate(float(init.identity), d), d)
 
     def visit_Assign(self, assign) -> None:
-        # A bool (a comparison feeding `where`) lives in an f32 register as 1.0 / 0.0, the
-        # representation the comparison and logic ops produce and `where` tests.
-        if getattr(assign.dtype, "name", assign.dtype) != "bool":
-            _require_f32(assign.dtype, assign.name)
-        args = [self._operand(name) for name in assign.args]
-        emit_elementwise(self.b, assign.op.name, self._register(assign.name), args)
+        """name = op(args) in the statement's dtype, each argument converted to it first (a
+        comparison compares in the type its arguments meet in). A bool lives in an f32 register
+        as 1.0 / 0.0, the representation the comparison and logic ops produce and `where` tests."""
+        d = dt.dtype(assign.dtype)
+        op = assign.op.name
+        self._types[assign.name] = d
+        if op in dt.COMPARISONS:
+            meet = dt.common([self._type(a) for a in assign.args])
+            args = [self._value(a, meet) for a in assign.args]
+            dt.compare(self.b, op, self._register(assign.name, d), *args, meet)
+        elif op == "where" and d.reg != "f32":
+            cond, a, c = assign.args
+            dt.select(self.b, self._register(assign.name, d), self._value(cond, dt.BOOL),
+                      self._value(a, d), self._value(c, d), d)
+        else:
+            want = [dt.BOOL] + [d] * (len(assign.args) - 1) if op == "where" else [d] * len(assign.args)
+            args = [self._value(a, w) for a, w in zip(assign.args, want)]
+            self._set(assign.name, d, lambda dst: dt.emit(self.b, op, dst, args, d))
+
+    def _set(self, name: str, d: dt.DType, emit) -> None:
+        """name = what emit(register) computes, rounded to d when d is a 16-bit float."""
+        if not d.is_half:
+            emit(self._register(name, d))
+            return
+        raw = self.b.reg("f32")
+        emit(raw)
+        value = dt.round_to(self.b, raw, d)
+        if self.scopes.find(name) is None:
+            self.scopes.define(name, value)
+        else:
+            self.b.emit("mov.f32", self._register(name, d), value)
 
     def visit_Select(self, select) -> None:
         """name = the value of the first branch whose predicate holds; the last branch is the
         default. A predicate the facts settle drops out, so a known choice costs nothing."""
-        choice = self._operand(select.branches[-1].value)
+        d = dt.common([self._type(b.value) for b in select.branches])
+        self._types[select.name] = d
+        kind = "b" + str(d.bits) if d.is_int else ("f64" if d.reg == "f64" else "f32")
+        choice = self._value(select.branches[-1].value, d)
         for branch in reversed(select.branches[:-1]):
             holds = self.idx.pred(branch.select)
             if holds is True:
-                choice = self._operand(branch.value)
+                choice = self._value(branch.value, d)
             elif holds is not False:
-                reg = self.b.reg("f32")
-                self.b.emit("selp.f32", reg, self._operand(branch.value), choice, holds)
+                reg = self.b.reg(d.reg)
+                self.b.emit(f"selp.{kind}", reg, self._value(branch.value, d), choice, holds)
                 choice = reg
         if self.scopes.find(select.name) is None:
             self.scopes.define(select.name, choice)
         else:
-            self.b.emit("mov.f32", self._register(select.name), choice)
+            dt.move(self.b, self._register(select.name, d), choice, d)
 
     def visit_Accum(self, acc) -> None:
-        """acc = op(base, value), where base defaults to the accumulator itself."""
-        _require_f32(acc.dtype, acc.name)
-        value = self._operand(acc.value)
+        """acc = op(base, value), where base defaults to the accumulator itself; in the
+        accumulator's dtype, as C converts `acc += x` (a 16-bit one rounds each fold)."""
+        d = dt.dtype(acc.dtype)
+        value = self._value(acc.value, d)
         target = self._accumulator(acc)
-        if target is not None:
-            emit_elementwise(self.b, acc.op.name, target[0], [target[1], value])
+        if target is None:
+            return
+        dst, base = target
+        if not d.is_half:
+            dt.emit(self.b, acc.op.name, dst, [base, value], d)
+            return
+        raw = self.b.reg("f32")
+        dt.emit(self.b, acc.op.name, raw, [base, value], d)
+        self.b.emit("mov.f32", dst, dt.round_to(self.b, raw, d))
 
     def _accumulator(self, acc) -> tuple[str, str] | None:
         """(the register acc's new value goes to, the base it folds into), or None for a copy
@@ -699,22 +746,25 @@ class KernelLowering:
         dst = self.scopes.find(acc.name)
         if dst is None:
             raise CompileError(f"accumulator {acc.name!r} is folded before it is seeded")
-        base = self._operand(acc.base) if acc.base else dst
+        d = dt.dtype(acc.dtype)
+        base = self._value(acc.base, d) if acc.base else dst
         if acc.name in self._followed:
-            dst = self.b.reg("f32")
+            dst = self.b.reg(d.reg)
             self.scopes.define(acc.name, dst)
         return dst, base
 
     def visit_Load(self, load) -> None:
-        _require_f32(load.dtype, load.input)
+        d = self._buffer_dtype(load.input)
+        for name in load.names:
+            self._types[name] = d
         value = self.kernel.constants.get(load.input)
         if value is not None:  # a constant of the graph: an immediate, like a Let
             for name in load.names:
                 bound = self.scopes.find(name)
                 if isinstance(bound, str) and is_register(bound):  # a name written in place
-                    self.b.emit("mov.f32", bound, f32_imm(value))
+                    dt.move(self.b, bound, dt.immediate(value, d), d)
                 else:
-                    self.scopes.define(name, f32_imm(value))
+                    self.scopes.define(name, dt.immediate(value, d))
             return
         if self._prefetched is not None and all(self.scopes.find(n) is None for n in load.names):
             regs = self._prefetched.get((id(load), tuple(self._trips)))
@@ -727,38 +777,42 @@ class KernelLowering:
         # reuse a value already loaded from the same address.
         readonly = load.input not in self.shared and not self.kernel.buffers[load.input].is_output
         pos = 0
-        for width in _vector_widths(len(load.names)):
+        for width in _vector_widths(len(load.names), d):
             names = load.names[pos:pos + width]
             space, addr = self._address(load.input, Lin(flat.reg, flat.const + pos))
-            opcode = f"ld.{space}{'.nc' if readonly else ''}{_vec(width)}.f32"
+            opcode = f"ld.{space}{'.nc' if readonly else ''}{_vec(width)}.{d.mem}"
             if readonly and all(self.scopes.find(n) is None for n in names):
-                regs = self.scopes.memo((opcode, addr), lambda: self._load(opcode, addr, width))
+                regs = self.scopes.memo((opcode, addr), lambda: self._load(opcode, addr, width, d))
                 for name, reg in zip(names, regs):
                     self.scopes.define(name, reg)
-            else:
+            elif d == dt.F32:
                 self.b.emit(opcode, vector([self._register(n) for n in names]), addr)
+            else:
+                for name, reg in zip(names, self._load(opcode, addr, width, d)):
+                    dt.move(self.b, self._register(name, d), reg, d)
             pos += width
 
-    def _load(self, opcode: str, addr: str, width: int) -> list[str]:
-        regs = [self.b.reg("f32") for _ in range(width)]
+    def _load(self, opcode: str, addr: str, width: int, d: dt.DType = dt.F32) -> list[str]:
+        regs = [self.b.reg(d.mem_reg) for _ in range(width)]
         self.b.emit(opcode, vector(regs), addr)
-        return regs
+        return dt.from_memory(self.b, regs, d)
 
     def visit_Write(self, write) -> None:
-        """buf[i] = (v0, v1, ...) as vector stores, or one red.add per value when atomic."""
-        _require_f32(write.value_dtype, write.output)
+        """buf[i] = (v0, v1, ...) as vector stores, or one red.add per value when atomic; each
+        value converted to the buffer's dtype."""
         if str(write.swizzle) != "NONE":
             raise CompileError(f"swizzled writes ({write.swizzle}) are not supported")
-        values = [self._in_register(name) for name in write.values]
+        d = self._buffer_dtype(write.output)
+        values = [dt.to_memory(self.b, self._value(name, d), d) for name in write.values]
         flat = self._flat(write.output, write.index)
-        widths = [1] * len(values) if write.atomic else _vector_widths(len(values))
+        widths = [1] * len(values) if write.atomic else _vector_widths(len(values), d)
         pos = 0
         for width in widths:
             space, addr = self._address(write.output, Lin(flat.reg, flat.const + pos))
             if write.atomic:
-                self.b.emit(f"red.{space}.add.f32", addr, values[pos])
+                self.b.emit(f"red.{space}.{dt.atomic_add(d)}", addr, values[pos])
             else:
-                self.b.emit(f"st.{space}{_vec(width)}.f32", addr, vector(values[pos:pos + width]))
+                self.b.emit(f"st.{space}{_vec(width)}.{d.mem}", addr, vector(values[pos:pos + width]))
             pos += width
 
     # ---- shared memory, barriers, cross-thread combines ------------------------------------
@@ -802,7 +856,7 @@ class KernelLowering:
     def visit_WarpShuffle(self, ws) -> None:
         """XOR butterfly: at distance length/2, ..., 2, 1 every lane fetches its partner's
         states (named state_b) and folds them into its own with the combine program."""
-        _require_f32(ws.dtype, "WarpShuffle")
+        _require_f32_held(ws.dtype, "WarpShuffle")
         mask = self.b.reg("b32")
         self.b.emit("activemask.b32", mask)
         distance = ws.length // 2
@@ -810,6 +864,7 @@ class KernelLowering:
             self.b.comment(f"butterfly distance {distance}")
             with self.scopes.nested():
                 for state, partner in zip(ws.state, ws.state_b):
+                    self._types[partner] = self._type(state)
                     self.b.emit("shfl.sync.bfly.b32", self._define_new(partner),
                                 self._operand(state), distance, "0x1f", mask)
                 self._stmts(ws.combine_states, annotate=False)
@@ -820,7 +875,7 @@ class KernelLowering:
         ..., 1 entry i < s combines entry i + s into itself; then every thread reads entry 0."""
         if tree.inner is not None:
             raise CompileError("TreeHalve with an inner tree is not supported")
-        _require_f32(tree.dtype, "TreeHalve")
+        _require_f32_held(tree.dtype, "TreeHalve")
         tid = self.scopes.lookup(tree.tid_var)
         arrays = [self.shared[buf] for buf in tree.bufs]
         stride = tree.length // 2
@@ -833,6 +888,7 @@ class KernelLowering:
             with self.scopes.nested(hoist=before):
                 mine = self.idx.shared_address
                 for array, state, partner in zip(arrays, tree.state, tree.state_b):
+                    self._types[partner] = self._type(state)
                     self.b.emit("ld.shared.f32", self._define_new(state),
                                 mine(array.symbol, tid, _F32_BYTES))
                     self.b.emit("ld.shared.f32", self._define_new(partner),
@@ -855,29 +911,42 @@ class KernelLowering:
             raise CompileError(f"integer {name!r} used as an f32 value")
         return value
 
-    def _register(self, name: str) -> str:
+    def _type(self, name: str) -> dt.DType:
+        """The dtype of a value name; an index (a Lin) reads as i32."""
+        if name in self._types:
+            return self._types[name]
+        return dt.I32 if isinstance(self.scopes.find(name), Lin) else dt.F32
+
+    def _value(self, name: str, want: dt.DType) -> str:
+        """The value of `name` as dtype `want`, converted if it has another."""
+        value = self.scopes.lookup(name)
+        if isinstance(value, Lin):
+            return dt.convert(self.b, self.idx.operand(value), dt.I32, want)
+        return dt.convert(self.b, value, self._type(name), want)
+
+    def _register(self, name: str, d: dt.DType = dt.F32) -> str:
         """The f32 register `name` is written to. Assigning a name that already exists (an
         accumulator, a reduction state) updates it in place, as in C; a new name gets a fresh
         register in the current scope."""
         value = self.scopes.find(name)
         if value is None:
-            return self._define_new(name)
+            return self._define_new(name, d)
         if not (isinstance(value, str) and is_register(value)):
             raise CompileError(f"cannot assign to {name!r}")
         return value
 
-    def _define_new(self, name: str) -> str:
+    def _define_new(self, name: str, d: dt.DType = dt.F32) -> str:
         """A fresh register for `name`, shadowing any outer definition until the scope ends."""
-        reg = self.b.reg("f32")
+        reg = self.b.reg(d.reg)
         self.scopes.define(name, reg)
         return reg
 
-    def _in_register(self, name: str) -> str:
-        operand = self._operand(name)
+    def _in_register(self, name: str, d: dt.DType = dt.F32) -> str:
+        operand = self._value(name, d)
         if is_register(operand):
             return operand
-        reg = self.b.reg("f32")
-        self.b.emit("mov.f32", reg, operand)
+        reg = self.b.reg(d.reg)
+        dt.move(self.b, reg, operand, d)
         return reg
 
     def _flat(self, buffer: str, index) -> Lin:
@@ -893,13 +962,17 @@ class KernelLowering:
         """(state space, memory operand) of element `flat` of a buffer or shared array."""
         if buffer in self.shared:
             array = self.shared[buffer]
-            in_pool = Lin(flat.reg, flat.const + array.offset // _F32_BYTES)
-            return "shared", self.idx.shared_address(array.symbol, in_pool, _F32_BYTES)
-        if self.kernel.buffers[buffer].dtype != "f32":
-            raise CompileError(f"buffer {buffer!r} has dtype {self.kernel.buffers[buffer].dtype}")
+            esize = array.dtype.nbytes
+            in_pool = Lin(flat.reg, flat.const + array.offset // esize)
+            return "shared", self.idx.shared_address(array.symbol, in_pool, esize)
         if buffer not in self.globals:
             raise CompileError(f"buffer {buffer!r} is not a kernel parameter")
-        return "global", self.idx.global_address(self.globals[buffer], flat, _F32_BYTES)
+        return "global", self.idx.global_address(self.globals[buffer], flat, self._buffer_dtype(buffer).nbytes)
+
+    def _buffer_dtype(self, buffer: str) -> dt.DType:
+        if buffer in self.shared:
+            return self.shared[buffer].dtype
+        return dt.dtype(self.kernel.buffers[buffer].dtype)
 
 
 # ---- helpers ---------------------------------------------------------------------------------
@@ -912,21 +985,21 @@ def _vec(width: int) -> str:
     return "" if width == 1 else f".v{width}"
 
 
-def _vector_widths(n: int) -> list[int]:
-    """Split n consecutive values into vector accesses (the IR only groups aligned runs)."""
+def _vector_widths(n: int, d: dt.DType = dt.F32) -> list[int]:
+    """Split n consecutive values into vector accesses (the IR only groups aligned runs). Bytes
+    (bools) go one at a time: PTX's vector byte accesses want 16-bit registers."""
+    if d.nbytes == 1:
+        return [1] * n
     if n in (1, 2, 4):
         return [n]
     width = 4 if n % 4 == 0 else 2 if n % 2 == 0 else 1
     return [width] * (n // width)
 
 
-def _is_float(dtype) -> bool:
-    return getattr(dtype, "name", dtype) in ("f32", "float")
-
-
-def _require_f32(dtype, what: str) -> None:
-    if dtype is not None and not _is_float(dtype):
-        raise CompileError(f"{what}: dtype {getattr(dtype, 'name', dtype)} is not supported (f32 only)")
+def _require_f32_held(dtype, what: str) -> None:
+    """Cross-thread combines move 32-bit registers: f32, and the 16-bit floats held in f32."""
+    if dt.dtype(dtype).reg != "f32":
+        raise CompileError(f"{what}: dtype {getattr(dtype, 'name', dtype)} is not supported")
 
 
 def _statements(body) -> Iterator:

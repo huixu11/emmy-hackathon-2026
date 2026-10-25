@@ -16,15 +16,22 @@ PTX_TARGET = "sm_89"
 # register class -> (name prefix, .reg type)
 REG_CLASSES = {
     "pred": ("%p", ".pred"),
+    "b16": ("%h", ".b16"),
     "b32": ("%r", ".b32"),
     "b64": ("%rd", ".b64"),
     "f32": ("%f", ".f32"),
+    "f64": ("%fd", ".f64"),
 }
 
 
 def f32_imm(value: float) -> str:
     """A single-precision immediate spelled as its exact bit pattern: 1.0 -> 0f3F800000."""
     return "0f%08X" % struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def f64_imm(value: float) -> str:
+    """A double-precision immediate spelled as its exact bit pattern: 1.0 -> 0d3FF0000000000000."""
+    return "0d%016X" % struct.unpack("<Q", struct.pack("<d", value))[0]
 
 
 def is_register(operand: str) -> bool:
