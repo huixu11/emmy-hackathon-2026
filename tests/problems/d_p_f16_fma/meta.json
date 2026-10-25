@@ -1,0 +1,73 @@
+{
+ "id": "d_p_f16_fma",
+ "code": "torch.randn(4096, dtype=torch.float16) * torch.randn(4096, dtype=torch.float16) + torch.randn(4096, dtype=torch.float16)",
+ "rtol": 0.001,
+ "atol": 0.001,
+ "graph_inputs": [
+  "x0",
+  "x1",
+  "x2"
+ ],
+ "graph_outputs": [
+  "add"
+ ],
+ "kernels": [
+  {
+   "node": "add",
+   "entry": "k_add_pointwise",
+   "arg_order": [
+    "x1",
+    "x0",
+    "x2",
+    "add"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f16",
+     "shape": [
+      4096
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f16",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "x2",
+     "dtype": "f16",
+     "shape": [
+      4096
+     ],
+     "seed": 2
+    },
+    {
+     "name": "add",
+     "dtype": "f16",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

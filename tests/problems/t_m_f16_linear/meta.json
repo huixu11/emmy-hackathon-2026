@@ -1,0 +1,76 @@
+{
+ "id": "t_m_f16_linear",
+ "code": "x = torch.randn(128, 256, dtype=torch.float16); w = torch.randn(512, 256, dtype=torch.float16); b = torch.randn(512, dtype=torch.float16); torch.nn.functional.linear(x, w, b)",
+ "rtol": 0.01,
+ "atol": 0.02,
+ "graph_inputs": [
+  "x",
+  "w",
+  "b"
+ ],
+ "graph_outputs": [
+  "linear"
+ ],
+ "kernels": [
+  {
+   "node": "linear",
+   "entry": "k_linear_6ba30b",
+   "arg_order": [
+    "b",
+    "x",
+    "w",
+    "linear"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "b",
+     "dtype": "f16",
+     "shape": [
+      512
+     ],
+     "seed": 2
+    },
+    {
+     "name": "x",
+     "dtype": "f16",
+     "shape": [
+      128,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f16",
+     "shape": [
+      512,
+      256
+     ],
+     "seed": 1
+    },
+    {
+     "name": "linear",
+     "dtype": "f16",
+     "shape": [
+      128,
+      512
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

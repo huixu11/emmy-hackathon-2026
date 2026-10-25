@@ -1,0 +1,21 @@
+extern "C" __global__
+__launch_bounds__(256) void k_add_pointwise(const long long* add_c1, const long long* x, long long* add) {
+    int _gid = blockIdx.x * blockDim.x + threadIdx.x;
+        int a0 = _gid;
+        long long in0__u0 = add_c1[0];
+        long long in1__u0 = x[a0 * 4];
+        long long v0__u0 = in0__u0 + in1__u0;
+        long long in0__u1 = add_c1[0];
+        long long in1__u1 = x[a0 * 4 + 1];
+        long long v0__u1 = in0__u1 + in1__u1;
+        long long in0__u2 = add_c1[0];
+        long long in1__u2 = x[a0 * 4 + 2];
+        long long v0__u2 = in0__u2 + in1__u2;
+        long long in0__u3 = add_c1[0];
+        long long in1__u3 = x[a0 * 4 + 3];
+        long long v0__u3 = in0__u3 + in1__u3;
+        add[a0 * 4] = v0__u0;
+        add[a0 * 4 + 1] = v0__u1;
+        add[a0 * 4 + 2] = v0__u2;
+        add[a0 * 4 + 3] = v0__u3;
+}

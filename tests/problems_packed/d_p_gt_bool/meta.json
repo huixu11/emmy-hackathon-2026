@@ -1,0 +1,64 @@
+{
+ "id": "d_p_gt_bool",
+ "code": "torch.randn(4096) > 0.5",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "gt"
+ ],
+ "kernels": [
+  {
+   "node": "gt",
+   "entry": "k_gt_pointwise",
+   "arg_order": [
+    "gt_c1",
+    "x",
+    "gt"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "gt_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.5
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "gt",
+     "dtype": "bool",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

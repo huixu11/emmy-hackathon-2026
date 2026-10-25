@@ -71,11 +71,16 @@ def dtype(d) -> DType:
 
 
 def common(dtypes: list[DType]) -> DType:
-    """The dtype two operands of a comparison meet in, as C and torch promote them."""
-    for d in (F64, F32, I64, I32):
+    """The dtype operands of a comparison meet in, as torch promotes them: any float makes it a
+    float (f64 over the f32-held ones), else the widest integer; bools alone compare as f32."""
+    if F64 in dtypes:
+        return F64
+    if any(d.reg == "f32" and d != BOOL for d in dtypes):
+        return F32
+    for d in (I64, I32):
         if d in dtypes:
             return d
-    return F32  # bool, f16, bf16: held in f32 already
+    return F32
 
 
 # ---- values ----------------------------------------------------------------------------------

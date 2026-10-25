@@ -1,0 +1,64 @@
+{
+ "id": "d_p_f64_sqrt",
+ "code": "torch.sqrt(torch.abs(torch.randn(4096, dtype=torch.float64)) + 1.0)",
+ "rtol": 1e-06,
+ "atol": 1e-07,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "sqrt"
+ ],
+ "kernels": [
+  {
+   "node": "sqrt",
+   "entry": "k_sqrt_pointwise",
+   "arg_order": [
+    "add_c1",
+    "x",
+    "sqrt"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "add_c1",
+     "dtype": "f64",
+     "shape": [
+      1
+     ],
+     "data": [
+      1.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f64",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "sqrt",
+     "dtype": "f64",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

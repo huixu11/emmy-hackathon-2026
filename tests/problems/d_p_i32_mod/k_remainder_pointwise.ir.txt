@@ -1,0 +1,17 @@
+    Tile[a0] (N=1024)
+        in0__u0 = load remainder_c1[0]
+        in1__u0 = load x[((a0 * 4) + 0)]
+        i32 v0__u0 = remainder(in1__u0, in0__u0)
+        in0__u1 = load remainder_c1[0]
+        in1__u1 = load x[((a0 * 4) + 1)]
+        i32 v0__u1 = remainder(in1__u1, in0__u1)
+        in0__u2 = load remainder_c1[0]
+        in1__u2 = load x[((a0 * 4) + 2)]
+        i32 v0__u2 = remainder(in1__u2, in0__u2)
+        in0__u3 = load remainder_c1[0]
+        in1__u3 = load x[((a0 * 4) + 3)]
+        i32 v0__u3 = remainder(in1__u3, in0__u3)
+        remainder[((a0 * 4) + 0)] = v0__u0
+        remainder[((a0 * 4) + 1)] = v0__u1
+        remainder[((a0 * 4) + 2)] = v0__u2
+        remainder[((a0 * 4) + 3)] = v0__u3

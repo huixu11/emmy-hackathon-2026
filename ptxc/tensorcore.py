@@ -23,8 +23,9 @@ from .errors import CompileError
 from .facts import Fact
 from .index import Lin
 
-# swizzle name -> (shift, mask) of the bits XORed into bits 3.. of a 16-bit element index
-_SWIZZLES = {"B32": (6, 1), "B64": (6, 3), "B128": (6, 7), "B128@7": (7, 7)}
+# swizzle span -> mask of the bits XORed into bits 3.. of a 16-bit element index; "B128@7"
+# takes them from bit 7 instead of the default bit 6
+_SWIZZLE_MASKS = {"B32": 1, "B64": 3, "B128": 7}
 _NREGS = {"a": 4, "b": 2, "c": 4}
 
 
@@ -282,9 +283,10 @@ class TensorCores:
         name = str(swizzle)
         if name == "NONE":
             return element
-        if name not in _SWIZZLES:
+        m = re.fullmatch(r"(B\d+)(?:@(\d+))?", name)
+        if m is None or m.group(1) not in _SWIZZLE_MASKS:
             raise CompileError(f"swizzle {name} is not supported")
-        shift, mask = _SWIZZLES[name]
+        mask, shift = _SWIZZLE_MASKS[m.group(1)], int(m.group(2) or 6)
         if element.reg is None:
             e = element.const
             return Lin(None, e ^ (((e >> shift) & mask) << 3))

@@ -324,3 +324,69 @@ OPEN += [
     dict(id="z_f_l2_pow", code="x = torch.randn(32, 128); x / (x.pow(2).sum(-1, keepdim=True) ** 0.5 + 1e-6)",
          ref=lambda x: [f32(f64(x) / (np.sqrt((f64(x) ** 2).sum(-1, keepdims=True)) + 1e-6))], rtol=1e-4, atol=1e-5),
 ]
+
+# ---- batch 6: data types other than f32 (bf16 and bool, which the runner cannot allocate, are in
+# tests/expressions_packed.py). 16-bit floats round each op as torch does; f64 is compared after
+# submit.py's cast to f32; integer // and % round toward minus infinity ----
+f16 = lambda a: np.asarray(a).astype(np.float16)
+OPEN += [
+    dict(id="d_p_f16_fma", code="torch.randn(4096, dtype=torch.float16) * torch.randn(4096, dtype=torch.float16) + torch.randn(4096, dtype=torch.float16)",
+         ref=lambda a, b, c: [a * b + c], rtol=1e-3, atol=1e-3),
+    dict(id="d_p_f16_exp", code="torch.exp(torch.randn(4096, dtype=torch.float16))",
+         ref=lambda x: [f16(np.exp(f64(x)))], rtol=1e-3, atol=1e-3),
+    dict(id="d_p_f16_sigmoid", code="torch.sigmoid(torch.randn(4096, dtype=torch.float16))",
+         ref=lambda x: [f16(_sig(f64(x)))], rtol=1e-3, atol=1e-3),
+    dict(id="d_p_f16_to_f32", code="torch.randn(4096, dtype=torch.float16).float() * 2.0",
+         ref=lambda x: [f32(x) * 2], rtol=0, atol=0),
+    dict(id="d_p_f32_to_f16", code="torch.randn(4096).half()",
+         ref=lambda x: [f16(x)], rtol=0, atol=0),
+    dict(id="d_r_f16_sum", code="torch.randn(64, 256, dtype=torch.float16).sum(-1)",
+         ref=lambda x: [f16(f64(x).sum(-1))], rtol=2e-3, atol=2e-3),
+    dict(id="d_r_f16_amax", code="torch.randn(64, 256, dtype=torch.float16).amax(-1)",
+         ref=lambda x: [x.max(-1)], rtol=0, atol=0),
+    dict(id="d_f_f16_softmax", code="torch.softmax(torch.randn(64, 256, dtype=torch.float16), dim=-1)",
+         ref=lambda x: [f16(_softmax(f64(x)))], rtol=2e-3, atol=1e-4),
+    dict(id="d_f_f16_layernorm", code="x = torch.randn(64, 256, dtype=torch.float16); torch.nn.functional.layer_norm(x, (256,))",
+         ref=lambda x: [f16((f64(x) - f64(x).mean(-1, keepdims=True)) / np.sqrt(f64(x).var(-1, keepdims=True) + 1e-5))],
+         rtol=5e-3, atol=5e-3),
+    dict(id="d_p_f64_mul", code="torch.randn(4096, dtype=torch.float64) * torch.randn(4096, dtype=torch.float64)",
+         ref=lambda a, b: [a * b], rtol=1e-6, atol=1e-7),
+    dict(id="d_p_f64_sqrt", code="torch.sqrt(torch.abs(torch.randn(4096, dtype=torch.float64)) + 1.0)",
+         ref=lambda x: [np.sqrt(np.abs(x) + 1.0)], rtol=1e-6, atol=1e-7),
+    dict(id="d_p_f64_tanh", code="torch.tanh(torch.randn(4096, dtype=torch.float64))",
+         ref=lambda x: [np.tanh(x)], rtol=1e-6, atol=1e-6),
+    dict(id="d_r_f64_sum", code="torch.randn(64, 256, dtype=torch.float64).sum(-1)",
+         ref=lambda x: [x.sum(-1)], rtol=1e-5, atol=1e-5),
+    dict(id="d_p_i32_arith", code="torch.randint(0, 100, (4096,), dtype=torch.int32) * 3 - torch.randint(0, 100, (4096,), dtype=torch.int32)",
+         ref=lambda a, b: [a * 3 - b], rtol=0, atol=0),
+    dict(id="d_p_i32_floordiv", code="torch.randint(0, 100, (4096,), dtype=torch.int32) // 2",
+         ref=lambda x: [x // 2], rtol=0, atol=0),
+    dict(id="d_p_i32_mod", code="torch.randint(0, 100, (4096,), dtype=torch.int32) % 3",
+         ref=lambda x: [x % 3], rtol=0, atol=0),
+    dict(id="d_p_i64_add", code="torch.randint(0, 100, (4096,)) + 1",
+         ref=lambda x: [x + 1], rtol=0, atol=0),
+    dict(id="d_p_i32_to_f32", code="torch.randint(0, 100, (4096,), dtype=torch.int32).float() / 3.0",
+         ref=lambda x: [f32(x) * f32(1 / np.float32(3.0))], rtol=1e-6, atol=1e-6),
+    dict(id="d_r_i32_sum", code="torch.randint(0, 100, (64, 256), dtype=torch.int32).sum(-1)",
+         ref=lambda x: [x.astype(np.int64).sum(-1)], rtol=0, atol=0),
+]
+
+
+# ---- batch 7: tensor cores. emmy schedules f16 matmuls on mma.sync m16n8k16: staged through
+# swizzled shared memory, or read straight from global memory for small and odd shapes ----
+def _mma(m, k, n):
+    return dict(id=f"t_m_f16_{m}x{k}x{n}",
+                code=f"torch.randn({m}, {k}, dtype=torch.float16) @ torch.randn({k}, {n}, dtype=torch.float16)",
+                ref=lambda a, b: [f16(f64(a) @ f64(b))], rtol=1e-2, atol=1e-2)
+
+
+OPEN += [
+    _mma(64, 64, 64), _mma(128, 128, 128), _mma(256, 256, 256), _mma(512, 512, 512),
+    _mma(96, 80, 112), _mma(100, 70, 50),
+    dict(id="t_m_f16_bmm", code="torch.randn(4, 64, 64, dtype=torch.float16) @ torch.randn(4, 64, 64, dtype=torch.float16)",
+         ref=lambda a, b: [f16(f64(a) @ f64(b))], rtol=1e-2, atol=1e-2),
+    dict(id="t_m_f16_linear", code="x = torch.randn(128, 256, dtype=torch.float16); w = torch.randn(512, 256, dtype=torch.float16); b = torch.randn(512, dtype=torch.float16); torch.nn.functional.linear(x, w, b)",
+         ref=lambda x, w, b: [f16(f64(x) @ f64(w).T + f64(b))], rtol=1e-2, atol=2e-2),
+    dict(id="t_m_f16_relu", code="torch.relu(torch.randn(128, 128, dtype=torch.float16) @ torch.randn(128, 128, dtype=torch.float16))",
+         ref=lambda a, b: [f16(np.maximum(f64(a) @ f64(b), 0))], rtol=1e-2, atol=1e-2),
+]
