@@ -19,6 +19,7 @@ from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Select, SelectBranch, Write
 
 from . import dtypes as dt
+from .cse import eliminate_common_subexpressions
 from .errors import CompileError
 from .facts import Fact
 from .fmath import ONE
@@ -103,7 +104,7 @@ class KernelLowering(TensorCores):
         if self.exit_label:
             self.b.place(self.exit_label)
         self.b.emit("ret")
-        self.b.lines = vectorize_loads(self.b.flat(), self._alignment)
+        self.b.lines = vectorize_loads(eliminate_common_subexpressions(self.b.flat()), self._alignment)
         return render_module(
             self.kernel.entry,
             [_param_symbol(name) for name in self.kernel.params],
