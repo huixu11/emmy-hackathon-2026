@@ -390,3 +390,38 @@ OPEN += [
     dict(id="t_m_f16_relu", code="torch.relu(torch.randn(128, 128, dtype=torch.float16) @ torch.randn(128, 128, dtype=torch.float16))",
          ref=lambda a, b: [f16(np.maximum(f64(a) @ f64(b), 0))], rtol=1e-2, atol=1e-2),
 ]
+
+
+# ---- batch 8: f16 attention on tensor cores. q @ k.T and p @ v are mma.sync; the online softmax
+# between them works on the C fragments (FragmentApply, FragmentRowReduce, FragmentRepack) ----
+def _sdpa_f16(b, h, n, d, tag="", args="", mask=None, scale=None):
+    """scaled_dot_product_attention in f16; `mask(n)` is the boolean mask a causal one keeps."""
+    def ref(q, k, v, *rest):
+        s = f64(q) @ np.swapaxes(f64(k), -1, -2) * (scale if scale is not None else 1 / math.sqrt(d))
+        if rest:
+            s = s + f64(rest[0])
+        if mask is not None:
+            s = np.where(mask(n), s, -np.inf)
+        return [f16(_softmax(s) @ f64(v))]
+    extra = f"; m = torch.randn({n}, {n}, dtype=torch.float16)" if "attn_mask" in args else ""
+    return dict(id=f"t_s_f16_{tag}{b}x{h}x{n}x{d}",
+                code=f"q = torch.randn({b}, {h}, {n}, {d}, dtype=torch.float16); "
+                     f"k = torch.randn({b}, {h}, {n}, {d}, dtype=torch.float16); "
+                     f"v = torch.randn({b}, {h}, {n}, {d}, dtype=torch.float16){extra}; "
+                     f"torch.nn.functional.scaled_dot_product_attention(q, k, v{args})",
+                ref=ref, rtol=1e-2, atol=1e-2)
+
+
+_causal = lambda n: np.tril(np.ones((n, n), dtype=bool))
+OPEN += [
+    _sdpa_f16(1, 2, 64, 64), _sdpa_f16(2, 4, 128, 64), _sdpa_f16(1, 1, 256, 64), _sdpa_f16(1, 2, 64, 32),
+    _sdpa_f16(1, 2, 128, 64, "causal_", ", is_causal=True", mask=_causal),
+    _sdpa_f16(1, 1, 64, 32, "causal_", ", is_causal=True", mask=_causal),
+    _sdpa_f16(1, 2, 128, 64, "scale_", ", scale=0.1", scale=0.1),
+    _sdpa_f16(1, 2, 64, 64, "mask_", ", attn_mask=m"),  # an additive mask: emmy keeps this one off tensor cores
+    dict(id="t_s_f16_manual_2x128x64",
+         code="q = torch.randn(2, 128, 64, dtype=torch.float16); k = torch.randn(2, 128, 64, dtype=torch.float16); "
+              "v = torch.randn(2, 128, 64, dtype=torch.float16); torch.softmax(q @ k.transpose(-1, -2) * 0.125, dim=-1) @ v",
+         ref=lambda q, k, v: [f16(_softmax(f64(f16(f64(q) @ np.swapaxes(f64(k), -1, -2))) * 0.125) @ f64(v))],
+         rtol=2e-2, atol=2e-2),
+]

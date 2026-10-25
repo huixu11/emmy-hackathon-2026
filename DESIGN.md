@@ -5,15 +5,15 @@
 ```bash
 python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > out.ptx
 python tools/run_problems.py                     # the 15 open problems on the GPU runner
-python tools/run_problems.py --dir tests/problems   # 162 extra hidden-set-style problems
+python tools/run_problems.py --dir tests/problems   # 171 extra hidden-set-style problems
 python tools/run_packed.py                       # 10 with bf16 or bool buffers
 python -m unittest discover -s tests             # offline: every kernel compiles
 ```
 
-Results on the runner (RTX 5090): **15/15 open problems**, all five categories, **162/162** of
+Results on the runner (RTX 5090): **15/15 open problems**, all five categories, **171/171** of
 the extra problems in `tests/problems` and **10/10** in `tests/problems_packed`. Beyond f32,
-the compiler handles f16, bf16, f64, i32, i64 and bool values ([Data types](#data-types-dtypespy))
-and f16 / bf16 matmuls on tensor cores ([Tensor cores](#tensor-cores-tensorcorepy)). Pointwise
+the compiler handles f16, bf16, f64, i32, i64 and bool values ([Data types](#data-types-dtypespy)),
+and f16 / bf16 matmuls and f16 attention on tensor cores ([Tensor cores](#tensor-cores-tensorcorepy)). Pointwise
 f32 outputs match numpy bit for bit. Kernel speed is on par with Emmy's own CUDA path or
 better: a geometric mean of 0.84x its time over the 147 f32 problems that have a reference
 time (see [Performance](#performance)).
@@ -28,6 +28,7 @@ kernel.py   load      IR json -> typed KernelOp body; buffers (shape, dtype); me
 lower.py    plan      lay out every shared array (static symbols, or one dynamic pool > 48 KiB)
             prologue  ld.param + cvta.to.global for each parameter, in meta.json's arg_order
             walk      one visit_<Statement> per IR statement, emitting PTX as it goes
+cse.py                drop recomputed rcp.rn / div.rn / sqrt.rn, which ptxas keeps
 vectorize.py          merge runs of scalar loads into .v2/.v4 loads where alignment is proven
 ptx.py      render    .version/.target, shared declarations, .entry signature, .reg counts, body
 ```
@@ -42,6 +43,7 @@ ptx.py      render    .version/.target, shared declarations, .entry signature, .
 | `dtypes.py` | How each dtype is held, loaded, stored and converted; f64 and integer ops. |
 | `tensorcore.py` | Register fragments, `ldmatrix`, `mma.sync`, fragment stores, shared-memory swizzles. |
 | `scope.py` | Track IR-name scopes, the cache of computed values, and where values can be hoisted to. |
+| `cse.py` | Drop recomputed divisions, reciprocals and square roots after lowering. |
 | `vectorize.py` | Merge scalar loads into vector loads after lowering. |
 | `ptx.py` | Hand out virtual registers and labels, keep instructions structured, lay out the module. |
 
@@ -257,6 +259,17 @@ later load up is safe because nothing in between may write that memory (a store,
 m01 goes from 256 scalar shared loads to 96 vector ones, the same count as NVVM's code for the
 reference.
 
+Before that, `cse.py` removes recomputations. Emmy repeats pure scalar work per output tile:
+f16 attention takes each row's `reciprocal` of the softmax sum once per 16x8 tile it stores, 8
+times per row. ptxas merges repeated arithmetic itself, but not `rcp.rn`, `div.rn` or
+`sqrt.rn`, whose slow path it calls as a subroutine: each copy stays, with its `CALL`. The pass
+makes a repeat of those read the first result instead, when both are unguarded and in one
+basic block, no instruction between them writes a source or reads the repeat's result, and no
+other instruction writes either result register. In `t_s_f16_1x2x64x64` that removes 56 of 64
+reciprocals and their calls: 15.0 -> 13.0 us, the reference's time. On the 17 other kernels it
+changes, time is unchanged (0.999x). Merging the cheap ops as well gave ptxas's SASS back
+almost unchanged, and moved `x_a_16` from 4.8 to 6.8 us, so those are left to ptxas.
+
 ## Cross-thread combines
 
 **`WarpShuffle`** is an XOR butterfly over `length` lanes. At distance 16, 8, 4, 2, 1 each lane
@@ -360,7 +373,7 @@ g + 8, columns 2t and 2t + 1, where g = l / 4 and t = l % 4.
 | IR | PTX |
 |---|---|
 | `RegFragment` | that many registers per fragment, per array entry; C starts at 0.0 |
-| `LdmatrixLoad`, staged | `ldmatrix.sync.aligned.m8n8.x4` (A), `.x2.trans` / `.x4.trans` pair (B), `.x2` (B stored N x K) |
+| `LdmatrixLoad`, staged | `ldmatrix.sync.aligned.m8n8.x4` (A), `.x2.trans` / `.x4.trans` pair (B), `.x2` / `.x4` pair (B stored N x K) |
 | `LdmatrixLoad`, from global | two `ld.global.nc.b16` per register in mma's lane map, packed with `mov.b32 {lo, hi}` |
 | `MmaSyncPtx` | `mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}.{f16,bf16}.f32`, C in place |
 | `RegStore` | per lane, rows g and g + 8: the optional epilogue, a conversion to the buffer's dtype, and a `.v2` store when both values share a guard and the address is aligned |
@@ -386,8 +399,30 @@ column in the tile (`__N__`) and names in scope: a bias load and add for `linear
 
 All 9 f16 matmuls in `tests/problems` (64 to 512, 96x80x112, 100x70x50, batched, `linear` with
 bias, relu) and both bf16 ones in `tests/problems_packed` pass, at 0.98x the reference's time.
-The f16 attention emmy also emits (`FragmentApply`, `FragmentRowReduce`, `FragmentRepack`) is
-not implemented yet.
+
+### Attention on tensor cores
+
+For f16 attention emmy keeps everything in registers between two mmas: S = q @ k.T into C
+fragments, the online softmax on those fragments, then P @ v with P as the A operand. Three
+statements do the softmax part.
+
+| IR | PTX |
+|---|---|
+| `FragmentApply` | one f32 op per element (4 per lane): its arguments are fragments (element e), uniform scalars, per-row pairs (rows g and g + 8 pick one each), or a predicate over the element's absolute row and column, then any fused unary ops. In place (`O *= alpha`) it writes the fragment's own registers; otherwise its results are a new fragment |
+| `FragmentRowReduce` | for each of the lane's two rows, its elements across all the chunk's fragments folded in order, then `shfl.sync.bfly.b32` by 2 and by 1: the 4 lanes that share a row end with the whole row's max (or sum) |
+| `FragmentRepack` | two f32 C fragments (k 0-7 and 8-15) into one 16-bit A fragment, `cvt.rn.f16x2.f32 a, c[1], c[0]` per register: C's lane map and A's line up, so no data moves between lanes |
+
+The causal mask is a `FragmentApply` `where(__frow < __fcol, -1e30, s)`. `__frow` and `__fcol`
+are the tile origin plus the layout's offsets for the lane (g, g + 8; 2t, 2t + 1), so the
+predicate is index arithmetic (`setp.lt.s32`) and the select is `selp.f32`. A key chunk loop
+that holds such fragments is not unrolled whole, unlike the scalar attention loops (Loops):
+each trip keeps dozens of fragments live, and the 256-key kernel unrolled spilled and ran
+1.22x the reference's time, rolled 1.00x.
+
+The 9 f16 attention problems in `tests/problems` (`t_s_*`: 1 to 8 heads, 64 to 256 keys, head
+size 32 and 64, causal, a given scale, the softmax(q @ k.T) @ v pattern written out) all pass,
+at 0.82x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
+is scheduled by emmy on the scalar path instead.
 
 ## Performance
 
@@ -459,7 +494,7 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 
 * `tools/run_problems.py` runs `submit.py`'s exact check (compile with `compile.py`, assemble,
   run under meta.json's launch, compare with `expected.npz`) over many problems.
-* `tests/problems/` holds 162 problems generated by `tools/generate.py` from
+* `tests/problems/` holds 171 problems generated by `tools/generate.py` from
   `tests/expressions_variants.py`: new shapes and ops in all five categories. They include odd
   sizes, 3-D and outer broadcasts, every renderable elementwise op (`sin`/`cos` included),
   composite activations (mish, elu, hardswish), unpinned (multi-block, atomic), column,
@@ -476,12 +511,13 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
   that ran 1.7x slower than the reference before the row-streaming rule.
 * The sixth batch (`d_*`) covers the other data types: f16, f64, i32 and i64 pointwise ops,
   conversions, reductions, an f16 softmax and layer norm. bf16 and bool problems are in
-  `tests/problems_packed` (`tests/expressions_packed.py`). The seventh batch (`t_*`) holds the
-  tensor-core matmuls.
+  `tests/problems_packed` (`tests/expressions_packed.py`). The seventh batch (`t_m_*`) holds the
+  tensor-core matmuls, the eighth (`t_s_*`) f16 attention on tensor cores.
 * `tests/test_compiler.py` runs offline (`python -m unittest discover -s tests`): every kernel of
   every problem compiles to its meta.json launch contract, gives the same PTX on every run
   (nothing may depend on Python's string hashing), and assembles with `ptxas` when one is found;
-  bad input stops the compiler with a message.
+  bad input stops the compiler with a message; `cse.py` merges a repeat and keeps one whose
+  source changed or that follows a label.
 * The fifth batch (`z_*`) takes powers by constants: `x ** 2`, `** -2`, `** -0.5`, `** 0.5`,
   `** 2.2` and `** 3` (the last three on 2^18 elements), the mean of `x ** 1.5`, and RMS and
   L2 norms written with `x.pow(2)`. `tools/pow_sweep.py` runs 27 exponents on the GPU, with
@@ -493,8 +529,9 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 * Of the statements marked `*` in TASK.md, the `mma.sync` tensor-core ones are implemented
   (above, for the m16n8k16 layout); `Select` too. TMA (`TmaLoad`, mbarriers) needs a tensor map
   built on the host, which the runner cannot pass; `wgmma` needs sm_90a, and the runner is an
-  RTX 5090 (sm_120); carried state (`Pre`/`Carry`), the fragment epilogue statements of
-  tensor-core attention, block-scaled fp4 and byte-slab loads are not implemented either.
+  RTX 5090 (sm_120); carried state (`Pre`/`Carry`), a `FragmentApply` argument read from
+  global memory per element (an attention bias, which emmy did not emit for any problem here),
+  block-scaled fp4 and byte-slab loads are not implemented either.
 * f8 and other narrow dtypes are not supported; f64 transcendental functions are computed in
   f32 (above).
 * An unknown statement, op or dtype stops the compiler with a message on stderr and a nonzero

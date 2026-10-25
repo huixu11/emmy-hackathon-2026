@@ -25,6 +25,8 @@ sys.path.insert(0, str(REPO))
 
 from ptxc import CompileError, compile_file  # noqa: E402
 from ptxc import dtypes as dt  # noqa: E402
+from ptxc.cse import eliminate_common_subexpressions  # noqa: E402
+from ptxc.ptx import Instr  # noqa: E402
 
 PROBLEM_DIRS = [REPO / "problems", REPO / "tests/problems", REPO / "tests/problems_packed"]
 KERNELS = sorted(ir for d in PROBLEM_DIRS if d.exists() for ir in d.glob("*/*.ir.json"))
@@ -65,7 +67,8 @@ class EveryProblem(unittest.TestCase):
     def test_same_ptx_on_every_run(self):
         """Nothing may depend on Python's string hashing, which changes from process to process."""
         picks = [ir for ir in KERNELS if ir.parent.name in
-                 ("a01_attention", "v_a_rect", "m01_matmul_512", "t_m_f16_128x128x128", "d_f_f16_softmax")]
+                 ("a01_attention", "v_a_rect", "m01_matmul_512", "t_m_f16_128x128x128", "d_f_f16_softmax",
+                  "t_s_f16_causal_1x1x64x32")]
         for ir in picks:
             with self.subTest(kernel=ir.parent.name):
                 outs = {subprocess.run([sys.executable, str(REPO / "compile.py"), str(ir)], capture_output=True,
@@ -115,6 +118,26 @@ class DataTypes(unittest.TestCase):
         self.assertIs(dt.common([dt.I32, dt.F64]), dt.F64)
         with self.assertRaises(CompileError):
             dt.dtype("f8e4m3")
+
+
+class CommonSubexpressions(unittest.TestCase):
+    def _cse(self, *lines):
+        out = eliminate_common_subexpressions([Instr(*line) if isinstance(line, tuple) else line for line in lines])
+        return [(i.opcode, i.operands) if isinstance(i, Instr) else i for i in out]
+
+    def test_a_recomputation_reads_the_first_result(self):
+        out = self._cse(("rcp.rn.f32", ["%f2", "%f1"]), ("st.global.f32", ["[%rd1]", "%f2"]),
+                        ("rcp.rn.f32", ["%f3", "%f1"]), ("st.global.f32", ["[%rd1+4]", "%f3"]))
+        self.assertEqual(out, [("rcp.rn.f32", ["%f2", "%f1"]), ("st.global.f32", ["[%rd1]", "%f2"]),
+                               ("st.global.f32", ["[%rd1+4]", "%f2"])])
+
+    def test_kept_when_a_source_changes_or_a_block_ends(self):
+        changed = (("rcp.rn.f32", ["%f2", "%f1"]), ("add.f32", ["%f1", "%f1", "%f4"]), ("rcp.rn.f32", ["%f3", "%f1"]))
+        labelled = (("rcp.rn.f32", ["%f2", "%f1"]), "$L1_loop:", ("rcp.rn.f32", ["%f3", "%f1"]))
+        twice = (("rcp.rn.f32", ["%f2", "%f1"]), ("rcp.rn.f32", ["%f3", "%f1"]), ("mov.f32", ["%f3", "%f5"]))
+        for lines in (changed, labelled, twice):
+            with self.subTest(lines=lines):
+                self.assertEqual(len(self._cse(*lines)), len(lines))
 
 
 if __name__ == "__main__":

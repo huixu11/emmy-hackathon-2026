@@ -1,0 +1,92 @@
+{
+ "id": "t_s_f16_manual_2x128x64",
+ "code": "q = torch.randn(2, 128, 64, dtype=torch.float16); k = torch.randn(2, 128, 64, dtype=torch.float16); v = torch.randn(2, 128, 64, dtype=torch.float16); torch.softmax(q @ k.transpose(-1, -2) * 0.125, dim=-1) @ v",
+ "rtol": 0.02,
+ "atol": 0.02,
+ "graph_inputs": [
+  "q",
+  "k",
+  "v"
+ ],
+ "graph_outputs": [
+  "matmul_1"
+ ],
+ "kernels": [
+  {
+   "node": "matmul_1",
+   "entry": "k_matmul_softmax_reduce_65db11",
+   "arg_order": [
+    "mul_c1",
+    "q",
+    "k",
+    "v",
+    "matmul_1"
+   ],
+   "grid": [
+    128,
+    1,
+    1
+   ],
+   "block": [
+    32,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "mul_c1",
+     "dtype": "f16",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.125
+     ]
+    },
+    {
+     "name": "q",
+     "dtype": "f16",
+     "shape": [
+      2,
+      128,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "k",
+     "dtype": "f16",
+     "shape": [
+      2,
+      128,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "v",
+     "dtype": "f16",
+     "shape": [
+      2,
+      128,
+      64
+     ],
+     "seed": 2
+    },
+    {
+     "name": "matmul_1",
+     "dtype": "f16",
+     "shape": [
+      2,
+      128,
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

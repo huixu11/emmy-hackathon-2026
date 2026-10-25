@@ -21,6 +21,7 @@ EXAMPLES = {  # example name -> (problem folder, kernel entry)
     "4_tensor_core_matmul": ("tests/problems/t_m_f16_256x256x256", None),
     "5_f16_softmax": ("tests/problems/d_f_f16_softmax", None),
     "6_integer_floor_divide": ("tests/problems/d_p_i32_floordiv", None),
+    "7_f16_causal_attention": ("tests/problems/t_s_f16_causal_1x1x64x32", None),
 }
 
 
