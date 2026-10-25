@@ -305,7 +305,7 @@ The 15 open problems again, with every input in f16, f64 or i32 (`tests/expressi
 ## How these were measured
 
 * **Time:** the median of 100 launches after a warmup (`tools/run_problems.py --iters 100`). Each compiler ran twice, the two alternating; each figure is the lower of its two runs.
-* **Ours:** `compile.py` at commit f5af27d of `claude/great-wright-z5xc5f` (the last table: with the fixes for f64 cross-lane combines, which change no other kernel's PTX). All problems pass.
+* **Ours:** `compile.py` at commit f5af27d of `claude/great-wright-z5xc5f`; the last table at 721ae01, which adds the fixes for f64 cross-lane combines and changes no other kernel's PTX. All problems pass.
 * **Reference:** Emmy's own CUDA for each problem (`*.ref.cu`), compiled to PTX with NVRTC and run under the same launch. That build is a yardstick only; it is not part of the compiler or of this repo.
 * **One session:** the runner's speed drifts by about 20% between sessions, so figures from different sessions do not compare; the ratios here come from one session.
 * **Cold times differ:** without `--iters`, `run_problems.py` shows one cold launch per problem, which reads higher (a02: about 41 µs cold against 29.3 µs here).
