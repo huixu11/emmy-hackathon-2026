@@ -4,6 +4,7 @@
 
 ```bash
 python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > out.ptx
+python compile.py --exact-f64 path/to/kernel.ir.json > out.ptx   # f64 in f64 (default: in f32)
 python tools/run_problems.py                     # the 15 open problems on the GPU runner
 python tools/run_problems.py --dir tests/problems   # 308 extra hidden-set-style problems
 python tools/run_packed.py                       # 23 with bf16 or bool buffers
@@ -345,7 +346,7 @@ the GPU over its whole input range against float64.
 | f32 | 4 bytes | an f32 register | `fmath.py` |
 | f16, bf16 | 2 bytes (`ld/st .b16`) | an f32 register, at 16-bit precision | `fmath.py` in f32, then one rounding to the dtype |
 | bool | 1 byte (`ld/st .u8`) | an f32 register, 1.0 or 0.0 | the comparison and logic ops |
-| f64 | 8 bytes | an f64 register | `add/sub/mul/div.rn.f64`, `sqrt.rn.f64`, min/max, comparisons; other functions through f32 |
+| f64 | 8 bytes | an f32 register (the default, as Emmy's CUDA holds it), or an f64 register with `--exact-f64` | f32; with `--exact-f64`, `add/sub/mul/div.rn.f64`, `sqrt.rn.f64`, min/max, comparisons, and other functions through f32 |
 | i32, i64 | 4, 8 bytes | a `.b32` / `.b64` register | integer instructions |
 
 Every statement converts its operands to its own dtype first, as C converts `acc += x`: an
@@ -363,16 +364,23 @@ too far apart for the smaller operand to matter. Emmy's own CUDA differs here (b
 `float`, f16 ones `__half`), and our results are closer to numpy's (`d_p_f16_fma`: 0 against
 the reference's 7.8e-3 error). Stores round once, in their own conversion.
 
-f64 transcendental functions are evaluated in f32 and widened, as Emmy's CUDA does (it renders
-f64 locals as `float`). Integer `//` and `%` round toward minus infinity, as torch does; PTX's
+By default an f64 value is held in an f32 register, as Emmy's own CUDA holds it: it declares
+every f64 local `float`, even in a plain f64 multiply. Loads convert with `cvt.rn.f32.f64`, the
+arithmetic is f32, and stores convert back. sm_89 is Ada, every part of which (and the RTX 5090
+runner) runs f64 at 1/64 of the f32 rate, and Emmy's IR keeps the sums and maxima of its f64
+kernels in f32 anyway, so f64 arithmetic buys these kernels no accuracy: on the 32 f64 attention
+problems it took 1.71x the reference's time for the same median error (4.2e-7), against 0.76x
+in f32. `--exact-f64` (or `PTXC_EXACT_F64=1`) computes in f64 what the IR declares f64, for a
+GPU with fast f64 (A100 and H100 run it at half the f32 rate) or a kernel that needs it; f64
+transcendental functions are evaluated in f32 in either mode. Integer `//` and `%` round toward minus infinity, as torch does; PTX's
 `div` and `rem` truncate, so a sign fix follows (by a power of two, `//` is `shr.s32` and `%` an
 `and`). Emmy's CUDA uses C's truncating `/` and `%`, and fails `d_p_i32_floordiv` and
 `d_p_i32_mod`; it also fails to compile the f16 layer norm.
 
 Cross-thread combines move a state in its own dtype. Emmy's IR is mixed here too: an f64
 softmax folds its running max in f64 while its `WarpShuffle` and `TreeHalve` say f32 and its
-shared array is `float` (its CUDA reads the f64 input into a `float`). The max stays f64 in
-registers; `shfl.sync` moves 32 bits, so an f64 or i64 state crosses lanes in two halves
+shared array is `float` (its CUDA reads the f64 input into a `float`). With `--exact-f64` the
+max stays f64 in registers; `shfl.sync` moves 32 bits, so an f64 or i64 state crosses lanes in two halves
 (`mov.b64 {lo, hi}`, two shuffles, `mov.b64` back), and the tree reads and writes the shared
 array in the array's dtype, converting to the state's. A write to a register of another class
 than the statement's dtype stops the compiler with a message.
@@ -399,7 +407,8 @@ generated in f16 and f64 too (98 more `c_*`). They found four more gaps, all fix
 * `tools/generate.py` listed those split-K kernels in the cuda stage's order, the kernel that
   reads the partial sums first; it now orders the kernels producers first.
 
-An f64 max goes through emmy's `float` shared array in the tree combine, so its result is
+The f64 gaps are in what is now the `--exact-f64` mode; the offline tests assemble every f64
+kernel in both modes. An f64 max goes through emmy's `float` shared array in the tree combine, so its result is
 rounded to f32 (the reference's too, which keeps it all in `float`); those three are checked at
 f32 accuracy.
 
@@ -492,7 +501,8 @@ not part of the compiler.
 By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
 attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
 matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x, the open problems in f16,
-f64 and i32 1.00x, attention and reductions in f16 0.88x and 0.91x, in f64 1.69x and 0.98x. The "now" and "reference"
+f64 and i32 0.94x, attention and reductions in f16 0.88x and 0.91x, in f64 0.76x and 0.93x
+(1.71x and 0.97x with `--exact-f64`). The "now" and "reference"
 columns come from two runs of both compilers, alternating, taking the lower time of each: the
 runner's speed drifts by about 20% between sessions, so figures from different sessions do
 not compare. Every problem's figures are in [TIMINGS.md](TIMINGS.md).
@@ -520,13 +530,11 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 9. Accumulators that always hold equal values computed once (under Loops): half the exps
    in most attention kernels (`v_a_rect`: 58.0 -> 33.4 us).
 
-Of the 312 problems with a reference time, 32 are more than 3% slower, all f64: 30 attention
-kernels (1.1x to 2.9x) and 2 row maxima (1.6x). Their IR computes in f64 (q @ k's products, a
-running max and its 64-bit shuffles), which the RTX 5090 runs at 1/64 of the f32 rate, while
-the reference's CUDA declares every f64 value `float` and computes in f32. The results are
-equally accurate: emmy's f32 accumulators and `float` shared arrays limit them either way
-(the 30 attention kernels' median error is 4.2e-7 for both). No f32 problem is slower beyond
-the noise. Kernels of about
+Of the 312 problems with a reference time, 4 are more than 3% slower: f64 SDPA kernels, 1.04x
+to 1.09x. With `--exact-f64`, 30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x)
+are: their IR computes in f64 (q @ k's products, a running max and its 64-bit shuffles), which
+the RTX 5090 runs at 1/64 of the f32 rate, while the reference's CUDA declares every f64 value
+`float`, as ptxc does by default. No f32 problem is slower beyond the noise. Kernels of about
 3 us jump by 0.5 us now and then:
 `x_p_outer_bcast` and `x_m_bmm_bcast` once read 1.18x and 1.16x, and 1.01x here.
 
@@ -585,7 +593,7 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
   RTX 5090 (sm_120); carried state (`Pre`/`Carry`), a `FragmentApply` argument read from
   global memory per element (an attention bias, which emmy did not emit for any problem here),
   block-scaled fp4 and byte-slab loads are not implemented either.
-* f8 and other narrow dtypes are not supported; f64 transcendental functions are computed in
-  f32 (above).
+* f8 and other narrow dtypes are not supported; f64 is computed in f32 unless `--exact-f64`
+  is given, and f64 transcendental functions are computed in f32 either way (above).
 * An unknown statement, op or dtype stops the compiler with a message on stderr and a nonzero
   exit, and never produces wrong PTX silently.

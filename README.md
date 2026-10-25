@@ -25,7 +25,9 @@
 >   arithmetic, reductions and conversions. 16-bit floats round once per op, as torch does;
 >   integer `//` and `%` round toward minus infinity, as torch does (Emmy's own CUDA truncates).
 >   Every open problem also runs with all its inputs in f16, bf16, f64 or i32, and every
->   attention and reduction problem in f16 and f64 (`c_*`).
+>   attention and reduction problem in f16 and f64 (`c_*`). f64 is computed in f32 by default,
+>   as Emmy's own CUDA computes it: sm_89 GPUs run f64 at 1/64 of the f32 rate.
+>   `python compile.py --exact-f64 ...` (or `PTXC_EXACT_F64=1`) computes in f64 instead.
 > * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
 >   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
 >   XOR-swizzled shared memory (B32, B64, B128, B128@k), fragments read from global memory with
@@ -49,11 +51,10 @@
 >
 > **Results.** 15/15 open problems, 308/308 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
-> problems with a reference time, 0.54x on attention; 0.97x on the dtype problems, 1.00x on
-> the 9 tensor-core matmuls and 0.82x on the 9 f16 attention problems. Of the 312 problems with a
-> reference time, the only ones more than 3% slower are f64 kernels, 30 attention and 2 row
-> maxima: their IR computes in f64, which the RTX 5090 runs at 1/64 of the f32 rate, while the
-> reference's CUDA declares every f64 value `float`. Every problem is listed in [TIMINGS.md](TIMINGS.md).
+> problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
+> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.85x on the attention and reduction
+> problems in f16 and f64. Of the 312 problems with a reference time, the only ones more than 3%
+> slower are four f64 SDPA kernels, 1.04x to 1.09x. Every problem is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
