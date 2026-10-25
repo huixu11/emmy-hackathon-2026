@@ -230,7 +230,9 @@ itself when the IR names none) becomes one `fma.rn.f32`. That is what nvcc makes
 reference's `acc += a * b`, and of online softmax's `acc * alpha + v * beta`; the second
 shortens the chain that carries each key's update to the next (`v_a_rect`: 62.1 -> 41.6 us;
 over the 38 kernels it changes, 0.975x the time, though `a01` went 43.7 -> 45.8 us as
-ptxas scheduled the shorter code differently).
+ptxas scheduled the shorter code differently). An f64 value held in f32 counts as f32 here,
+as Emmy's CUDA multiplies its `float` locals: the f64 dot products had been separate `FMUL`
+and `FADD`, against the reference's `FFMA` (0.99x the time over the 37 f64 kernels it changes).
 A product by 1.0 (softmax's `one * beta`) is an exact add. Pointwise code keeps separately
 rounded `mul.rn` and `add.rn`, as numpy rounds them.
 
@@ -365,14 +367,50 @@ too far apart for the smaller operand to matter. Emmy's own CUDA differs here (b
 the reference's 7.8e-3 error). Stores round once, in their own conversion.
 
 By default an f64 value is held in an f32 register, as Emmy's own CUDA holds it: it declares
-every f64 local `float`, even in a plain f64 multiply. Loads convert with `cvt.rn.f32.f64`, the
-arithmetic is f32, and stores convert back. sm_89 is Ada, every part of which (and the RTX 5090
-runner) runs f64 at 1/64 of the f32 rate, and Emmy's IR keeps the sums and maxima of its f64
-kernels in f32 anyway, so f64 arithmetic buys these kernels no accuracy: on the 32 f64 attention
-problems it took 1.71x the reference's time for the same median error (4.2e-7), against 0.76x
-in f32. `--exact-f64` (or `PTXC_EXACT_F64=1`) computes in f64 what the IR declares f64, for a
-GPU with fast f64 (A100 and H100 run it at half the f32 rate) or a kernel that needs it; f64
-transcendental functions are evaluated in f32 in either mode. Integer `//` and `%` round toward minus infinity, as torch does; PTX's
+every f64 local `float`, even in a plain f64 multiply. Loads round to f32 as `cvt.rn.f32.f64`
+does (below), the arithmetic is f32, and stores convert back. sm_89 is Ada, every part of which
+(and the RTX 5090 runner) runs f64 at 1/64 of the f32 rate, and Emmy's IR keeps the sums and
+maxima of its f64 kernels in f32 anyway, so f64 arithmetic buys these kernels no accuracy: on
+the 32 f64 attention problems it took 1.71x the reference's time for the same median error
+(4.2e-7), against 0.60x in f32. `--exact-f64` (or `PTXC_EXACT_F64=1`) computes in f64 what
+the IR declares f64, for a GPU with fast f64 (A100 and H100 run it at half the f32 rate) or a
+kernel that needs it; f64 transcendental functions are evaluated in f32 in either mode.
+
+That leaves the reads as the f64 kernels' bottleneck. Ada and the RTX 5090 run
+`cvt.rn.f32.f64` on the f64 unit too, at the same 1/64 rate, and a kernel converts an element
+each time it loads it (attention once per query row for every key), as often as the reference
+does. So in loops three reads in five are rounded to f32 in integer instructions instead
+(`_read_f64`), to the same bits: the top 24 bits of the significand, rounded to nearest even by
+the 29 below, under the rebiased exponent; inf from 2^128 up, NaN kept; and below 2^-126 one f32
+multiply rounds x * 2^126, held as a normal f32 with the dropped bits as a sticky last bit, to
+f32's subnormals. That is about 20 ALU instructions, about what one `cvt` costs the f64 unit,
+so the two run side by side: the f64 unit converts the other two reads in five, the share that
+balanced them in the kernels measured. Every read in integer instructions made
+`c_f64_x_a_48x80x40` (a single block) slower than `cvt` alone, 980 against 909 us, and made
+long modules longer than the runner takes, which then unrolled less; one read in two slowed
+`c_f64_a01_attention` (969 against 618 us), whose q and k reads alternate, and one in three left
+`c_f64_x_a_48x80x40` at `cvt`'s time. The split goes by emission order, so which read lands on
+which unit shifts with the code around it: `c_f64_a02_attention_128` took 525 or 621 us in two
+versions whose loops differ in nothing else. Outside loops reads stay `cvt`: straight-line code
+holds what it loads at once, and there the integer form cost registers
+(`c_f64_y_a_64x32x16x32`: 48 -> 168 registers and 5 KB of spills, 1.50x the time). A module the
+integer form would take past the runner's limit is compiled with `cvt` alone before it unrolls
+less (8 of the f64 kernels).
+
+The integer form also made ptxas stop hoisting loads out of loops: the key walk of
+`c_f64_a01_attention` reloaded and reconverted the query row for every key, 128 loads a trip
+instead of 64, and took 1.25x the time of `cvt` alone. So a prefetching loop (under Loops) now
+loads an f64 read whose address does not change with the key once, before the loop, for all its
+trips (up to 64 values): a01 then took 0.84x, `c_f64_w_a_512x64` 0.58x instead of 1.18x. Over
+the 46 f64 kernels the reads change, the time is 0.84x that of `cvt` alone (`c_f64_m01_matmul_512`:
+321 -> 136 us, `c_f64_x_a_48x80x40`: 909 -> 601 us); the one slower, by 5%, is
+`c_f64_x_r_big_unpinned`, a single block summing a million values, each read once.
+
+The offline tests run the emitted instructions over 600,000 values in numpy against numpy's own
+conversion; on the GPU the integer form gave `cvt.rn.f32.f64`'s bits for 16,384 values, 7,500 of
+them below f32's normal range (the runner's JSON carries no inf or NaN inputs).
+
+Integer `//` and `%` round toward minus infinity, as torch does; PTX's
 `div` and `rem` truncate, so a sign fix follows (by a power of two, `//` is `shr.s32` and `%` an
 `and`). Emmy's CUDA uses C's truncating `/` and `%`, and fails `d_p_i32_floordiv` and
 `d_p_i32_mod`; it also fails to compile the f16 layer norm.
@@ -501,7 +539,7 @@ not part of the compiler.
 By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
 attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
 matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x, the open problems in f16,
-f64 and i32 0.94x, attention and reductions in f16 0.88x and 0.91x, in f64 0.76x and 0.93x
+f64 and i32 0.91x, attention and reductions in f16 0.88x and 0.91x, in f64 0.60x and 0.92x
 (1.71x and 0.97x with `--exact-f64`). The "now" and "reference"
 columns come from two runs of both compilers, alternating, taking the lower time of each: the
 runner's speed drifts by about 20% between sessions, so figures from different sessions do
@@ -529,10 +567,13 @@ What closed the gap, in the order it was found by comparing our SASS with the re
    f32 math). A load fewer on the critical path took `f01_rmsnorm` from 4.8 to 3.3 us.
 9. Accumulators that always hold equal values computed once (under Loops): half the exps
    in most attention kernels (`v_a_rect`: 58.0 -> 33.4 us).
+10. For f64, the fma for f64 held in f32 (under Loops) and f64 reads rounded by the f64 unit
+   and the integer ALUs side by side (under Data types): the four f64 SDPA kernels that were
+   1.04x to 1.09x the reference's time now take 0.68x to 0.80x.
 
-Of the 312 problems with a reference time, 4 are more than 3% slower: f64 SDPA kernels, 1.04x
-to 1.09x. With `--exact-f64`, 30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x)
-are: their IR computes in f64 (q @ k's products, a running max and its 64-bit shuffles), which
+None of the 312 problems with a reference time is more than 3% slower. With `--exact-f64`,
+30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x) are: their IR computes in f64
+(q @ k's products, a running max and its 64-bit shuffles), which
 the RTX 5090 runs at 1/64 of the f32 rate, while the reference's CUDA declares every f64 value
 `float`, as ptxc does by default. No f32 problem is slower beyond the noise. Kernels of about
 3 us jump by 0.5 us now and then:

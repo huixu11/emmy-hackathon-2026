@@ -12,12 +12,12 @@ ptxc's kernel times against Emmy's own CUDA for the same problems, on the GPU ru
 | data types | 19 (16 with a reference) | 1.00× | 0 | 16 | 0 |
 | f16 matmul on tensor cores | 9 | 1.00× | 0 | 9 | 0 |
 | f16 attention on tensor cores | 9 | 0.82× | 3 | 6 | 0 |
-| the open problems in f16, f64 and i32 | 39 (36 with a reference) | 0.94× | 7 | 29 | 0 |
-| attention and reductions in f16 and f64 | 98 (95 with a reference) | 0.85× | 45 | 46 | 4 |
+| the open problems in f16, f64 and i32 | 39 (36 with a reference) | 0.91× | 9 | 27 | 0 |
+| attention and reductions in f16 and f64 | 98 (95 with a reference) | 0.79× | 53 | 42 | 0 |
 | **all f32** (the five categories) | 149 (147 with a reference) | 0.84× | 48 | 99 | 0 |
-| **all** | 323 (312 with a reference) | 0.87× | 103 | 205 | 4 |
+| **all** | 323 (312 with a reference) | 0.84× | 113 | 199 | 0 |
 
-The rows do not overlap: the 323 are the 149 f32 problems of the five categories plus 174 in other data types or on tensor cores, and all 323 pass. The 23 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 11 (see their rows). The only problems more than 3% slower than the reference are four f64 SDPA kernels, 1.04× to 1.09× (see the last table).
+The rows do not overlap: the 323 are the 149 f32 problems of the five categories plus 174 in other data types or on tensor cores, and all 323 pass. The 23 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 11 (see their rows). None is more than 3% slower than the reference.
 
 The tables below list each set's problems from the slowest relative to the reference to the fastest.
 
@@ -257,25 +257,24 @@ q @ k.T and p @ v on `mma.sync`, the online softmax between them on the C fragme
 | `t_s_f16_causal_1x1x64x32` | 4.77 | 6.78 | 0.70× |
 | `t_s_f16_mask_1x2x64x64` | 98.94 | 341.38 | 0.29× |
 
-## The open problems in f16, f64 and i32 (39 problems, 0.94×)
+## The open problems in f16, f64 and i32 (39 problems, 0.91×)
 
 The 15 open problems again, with every input in f16, f64 or i32 (`tests/expressions_cross.py`; the bf16 ones are in `tests/problems_packed`, untimed). f64 values are computed in f32 here, as the reference's CUDA computes them (the default; see the next table for `--exact-f64`). Three have no reference time: NVRTC rejects their f16 reference sources.
 
 | problem | ours (µs) | reference (µs) | ours / reference |
 |---|---|---|---|
 | `c_f64_p01_vector_add` | 3.04 | 2.98 | 1.02× |
-| `c_f64_a02_attention_128` | 920.90 | 907.74 | 1.01× |
 | `c_f16_r01_array_sum` | 2.98 | 2.94 | 1.01× |
 | `c_f16_r04_row_sum` | 2.98 | 2.94 | 1.01× |
 | `c_f16_m01_matmul_512` | 3.01 | 2.98 | 1.01× |
 | `c_i32_p02_scale_shift` | 3.04 | 3.01 | 1.01× |
-| `c_f64_m01_matmul_512` | 322.11 | 320.03 | 1.01× |
 | `c_f16_a01_attention` | 6.82 | 6.78 | 1.00× |
 | `c_f64_p03_relu_mul` | 4.78 | 4.77 | 1.00× |
 | `c_i32_m01_matmul_512` | 21.41 | 21.34 | 1.00× |
 | `c_f16_m02_matmul_rect` | 4.77 | 4.77 | 1.00× |
 | `c_f16_p00_scalar_add` | 2.98 | 2.98 | 1.00× |
 | `c_f16_p01_vector_add` | 2.98 | 2.98 | 1.00× |
+| `c_f64_m02_matmul_rect` | 9.18 | 9.18 | 1.00× |
 | `c_f64_p00_scalar_add` | 3.01 | 3.01 | 1.00× |
 | `c_f64_r01_array_sum` | 3.01 | 3.01 | 1.00× |
 | `c_i32_p00_scalar_add` | 2.98 | 2.98 | 1.00× |
@@ -283,7 +282,6 @@ The 15 open problems again, with every input in f16, f64 or i32 (`tests/expressi
 | `c_i32_p03_relu_mul` | 2.98 | 2.98 | 1.00× |
 | `c_i32_r01_array_sum` | 2.98 | 2.98 | 1.00× |
 | `c_i32_r04_row_sum` | 2.94 | 2.94 | 1.00× |
-| `c_f64_m02_matmul_rect` | 9.15 | 9.18 | 1.00× |
 | `c_f16_r03_mean` | 6.78 | 6.82 | 1.00× |
 | `c_f16_p02_scale_shift` | 3.01 | 3.02 | 0.99× |
 | `c_i32_r02_big_sum` | 8.83 | 8.88 | 0.99× |
@@ -292,39 +290,35 @@ The 15 open problems again, with every input in f16, f64 or i32 (`tests/expressi
 | `c_f16_r02_big_sum` | 8.83 | 8.90 | 0.99× |
 | `c_f64_r04_row_sum` | 3.01 | 3.04 | 0.99× |
 | `c_f16_f02_row_softmax` | 2.94 | 2.98 | 0.99× |
-| `c_f64_r03_mean` | 12.96 | 14.98 | 0.87× |
+| `c_f64_r03_mean` | 12.90 | 15.01 | 0.86× |
 | `c_f16_a02_attention_128` | 10.91 | 12.96 | 0.84× |
-| `c_f64_r02_big_sum` | 21.15 | 25.28 | 0.84× |
-| `c_f64_f01_rmsnorm` | 4.80 | 6.78 | 0.71× |
-| `c_f64_f03_l2norm` | 3.17 | 4.72 | 0.67× |
+| `c_f64_r02_big_sum` | 21.12 | 25.28 | 0.84× |
+| `c_f64_f01_rmsnorm` | 4.75 | 6.82 | 0.70× |
+| `c_f64_a02_attention_128` | 620.98 | 907.74 | 0.68× |
+| `c_f64_f03_l2norm` | 3.17 | 4.77 | 0.66× |
 | `c_f64_f02_row_softmax` | 3.04 | 4.61 | 0.66× |
-| `c_f64_a01_attention` | 1055.44 | 1673.94 | 0.63× |
+| `c_f64_a01_attention` | 869.70 | 1673.89 | 0.52× |
+| `c_f64_m01_matmul_512` | 135.81 | 320.03 | 0.42× |
 | `c_f16_f01_rmsnorm` | 3.26 | — | no reference: NVRTC rejects its reference source |
 | `c_f16_f03_l2norm` | 2.93 | — | no reference: NVRTC rejects its reference source |
 | `c_f16_p03_relu_mul` | 2.98 | — | no reference: NVRTC rejects its reference source |
 
-## Attention and reductions in f16 and f64 (98 problems, 0.85×)
+## Attention and reductions in f16 and f64 (98 problems, 0.79×)
 
-The 49 attention and reduction problems above, with every input in f16 or f64. In f16, attention takes 0.88× the reference's time and reductions 0.91×. In f64, which ptxc computes in f32 by default, as the reference's CUDA does (it declares every f64 value `float`): attention 0.76×, reductions 0.93×. With `--exact-f64`, ptxc computes in f64 what the IR declares f64, which the RTX 5090 runs at 1/64 of the f32 rate: attention then takes 1.71×, reductions 0.97×, for the same accuracy in the end, which emmy's f32 accumulators limit (the median error of the 30 attention kernels is 4.2e-7 both ways). Four f64 SDPA kernels are 4 to 9% slower than the reference in the default mode. Three f16 means have no reference time: NVRTC rejects their reference sources.
+The 49 attention and reduction problems above, with every input in f16 or f64. In f16, attention takes 0.88× the reference's time and reductions 0.91×. In f64, which ptxc computes in f32 by default, as the reference's CUDA does (it declares every f64 value `float`): attention 0.60×, reductions 0.92×. The reference is bound there by converting each f64 element to f32 whenever it loads it, which the f64 unit does at 1/64 of the f32 rate; ptxc rounds three reads in five in integer instructions instead (to the same bits), so the f64 unit and the integer ALUs convert side by side (DESIGN.md, Data types). With `--exact-f64`, ptxc computes in f64 what the IR declares f64, which the RTX 5090 runs at 1/64 of the f32 rate: attention then takes 1.71×, reductions 0.97×, for the same accuracy in the end, which emmy's f32 accumulators limit (the median error of the 30 attention kernels is 4.2e-7 both ways). Three f16 means have no reference time: NVRTC rejects their reference sources.
 
 | problem | ours (µs) | reference (µs) | ours / reference |
 |---|---|---|---|
-| `c_f64_x_a_sdpa_b2h4` | 261.14 | 240.58 | 1.09× |
-| `c_f64_y_s_2x2x32x32` | 213.70 | 201.63 | 1.06× |
-| `c_f64_y_s_2x2x64x32` | 779.62 | 740.10 | 1.05× |
-| `c_f64_x_a_48x80x40` | 918.85 | 881.09 | 1.04× |
-| `c_f64_y_a_256x32x256x32` | 3007.76 | 2929.89 | 1.03× |
 | `c_f16_x_a_sdpa_b2h4` | 4.70 | 4.59 | 1.02× |
 | `c_f16_x_r_rows_odd` | 2.98 | 2.94 | 1.01× |
 | `c_f16_y_s_1x8x64x32` | 2.98 | 2.94 | 1.01× |
 | `c_f64_v_r_colsum` | 3.01 | 2.98 | 1.01× |
 | `c_f64_x_r_keepdim` | 3.26 | 3.23 | 1.01× |
-| `c_f64_y_a_32x128x256x64` | 37513.12 | 37196.90 | 1.01× |
 | `c_f16_y_s_2x2x64x32` | 8.93 | 8.86 | 1.01× |
 | `c_f16_x_r_l1` | 4.77 | 4.74 | 1.01× |
+| `c_f64_v_r_mean_rows` | 4.77 | 4.74 | 1.01× |
 | `c_f64_v_r_sumsq` | 4.77 | 4.74 | 1.01× |
-| `c_f64_v_r_mean_rows` | 4.80 | 4.77 | 1.01× |
-| `c_f64_x_a_cross` | 1932.99 | 1920.19 | 1.01× |
+| `c_f64_y_a_32x128x256x64` | 37393.70 | 37372.24 | 1.00× |
 | `c_f16_v_a_32x64` | 4.78 | 4.78 | 1.00× |
 | `c_f16_v_a_rect` | 8.86 | 8.86 | 1.00× |
 | `c_f16_v_r_colsum` | 2.98 | 2.98 | 1.00× |
@@ -345,65 +339,71 @@ The 49 attention and reduction problems above, with every input in f16 or f64. I
 | `c_f16_y_s_4x2x32x64` | 10.94 | 10.94 | 1.00× |
 | `c_f64_v_r_rowmax_wide` | 4.77 | 4.77 | 1.00× |
 | `c_f64_v_r_sum_odd` | 4.77 | 4.77 | 1.00× |
-| `c_f64_x_r_l1` | 6.78 | 6.78 | 1.00× |
 | `c_f64_x_r_mid_axis` | 3.01 | 3.01 | 1.00× |
 | `c_f64_x_r_rowmax_narrow` | 3.01 | 3.01 | 1.00× |
-| `c_f64_x_r_rows_odd` | 3.04 | 3.04 | 1.00× |
 | `c_f16_y_s_2x2x32x64` | 4.78 | 4.80 | 1.00× |
+| `c_f64_x_r_rows_odd` | 3.01 | 3.02 | 0.99× |
 | `c_f16_y_a_64x32x16x32` | 4.74 | 4.77 | 0.99× |
 | `c_f16_v_r_sum_odd` | 4.70 | 4.74 | 0.99× |
 | `c_f64_w_r_amax_rows` | 3.01 | 3.04 | 0.99× |
 | `c_f64_x_r_last_3d` | 3.01 | 3.04 | 0.99× |
 | `c_f16_v_r_sumsq` | 2.94 | 2.98 | 0.99× |
 | `c_f16_w_r_amax_rows` | 2.94 | 2.98 | 0.99× |
-| `c_f64_v_a_rect` | 969.94 | 981.94 | 0.99× |
 | `c_f16_x_a_16` | 4.77 | 4.83 | 0.99× |
 | `c_f64_x_r_sumexp` | 4.74 | 4.83 | 0.98× |
-| `c_f64_x_a_causal` | 1352.98 | 1396.06 | 0.97× |
-| `c_f64_y_a_128x64x128x64` | 4985.20 | 5156.88 | 0.97× |
 | `c_f64_x_r_mean_cols` | 3.30 | 3.42 | 0.96× |
 | `c_f16_y_s_2x2x32x32` | 4.56 | 4.80 | 0.95× |
-| `c_f64_w_a_sdpa` | 191.14 | 201.41 | 0.95× |
-| `c_f64_v_a_256x16` | 2270.46 | 2434.37 | 0.93× |
-| `c_f64_y_a_64x64x256x64` | 6506.02 | 7089.07 | 0.92× |
-| `c_f64_y_s_1x8x64x32` | 864.62 | 954.83 | 0.91× |
+| `c_f64_y_a_128x64x128x64` | 4784.38 | 5161.57 | 0.93× |
 | `c_f16_y_a_256x32x256x32` | 19.10 | 21.12 | 0.90× |
-| `c_f64_w_a_512x64` | 6448.45 | 7132.82 | 0.90× |
 | `c_f64_z_r_pow_mean` | 4.30 | 4.77 | 0.90× |
+| `c_f64_w_a_sdpa` | 178.82 | 201.34 | 0.89× |
+| `c_f64_y_a_64x64x256x64` | 6160.67 | 7087.36 | 0.87× |
 | `c_f16_y_a_32x128x256x64` | 25.31 | 29.34 | 0.86× |
-| `c_f64_w_r_sum_unpinned` | 21.12 | 25.28 | 0.84× |
+| `c_f64_w_r_sum_unpinned` | 21.15 | 25.28 | 0.84× |
 | `c_f16_y_a_64x64x32x64` | 10.82 | 12.99 | 0.83× |
 | `c_f16_w_a_512x64` | 60.06 | 72.35 | 0.83× |
-| `c_f64_x_a_long_kv` | 7220.43 | 8699.66 | 0.83× |
+| `c_f64_x_r_big_unpinned` | 295.46 | 356.86 | 0.83× |
 | `c_f16_y_a_96x64x96x48` | 8.90 | 10.91 | 0.82× |
 | `c_f16_x_r_big_unpinned` | 76.45 | 94.85 | 0.81× |
-| `c_f64_y_a_96x64x96x48` | 1138.22 | 1416.51 | 0.80× |
-| `c_f64_x_r_big_unpinned` | 281.06 | 356.91 | 0.79× |
-| `c_f64_y_s_1x1x256x64` | 15127.71 | 20300.72 | 0.75× |
+| `c_f64_x_a_sdpa_b2h4` | 191.36 | 240.54 | 0.80× |
+| `c_f64_y_s_2x2x32x32` | 156.50 | 201.60 | 0.78× |
+| `c_f64_x_r_l1` | 5.12 | 6.78 | 0.75× |
+| `c_f64_x_a_causal` | 1037.68 | 1394.08 | 0.74× |
+| `c_f64_x_a_cross` | 1406.24 | 1918.26 | 0.73× |
 | `c_f16_x_a_48x80x40` | 10.94 | 15.01 | 0.73× |
+| `c_f64_y_s_1x1x256x64` | 14760.94 | 20299.09 | 0.73× |
 | `c_f16_y_a_16x64x512x64` | 27.26 | 37.54 | 0.73× |
 | `c_f16_y_s_2x4x16x64` | 4.80 | 6.75 | 0.71× |
 | `c_f16_y_a_48x32x48x32` | 4.74 | 6.69 | 0.71× |
 | `c_f16_x_r_cumsum` | 4.80 | 6.82 | 0.70× |
-| `c_f64_y_a_64x64x32x64` | 437.44 | 636.22 | 0.69× |
-| `c_f64_y_a_16x64x512x64` | 20249.87 | 29610.10 | 0.68× |
+| `c_f64_y_s_2x2x64x32` | 516.83 | 740.06 | 0.70× |
+| `c_f64_x_a_48x80x40` | 601.36 | 881.12 | 0.68× |
 | `c_f64_w_r_rows_unpinned` | 3.17 | 4.75 | 0.67× |
 | `c_f16_v_a_256x16` | 68.26 | 103.17 | 0.66× |
-| `c_f64_y_a_64x32x16x32` | 27.58 | 41.86 | 0.66× |
+| `c_f64_y_a_256x32x256x32` | 1936.18 | 2928.40 | 0.66× |
+| `c_f64_y_a_64x32x16x32` | 27.62 | 41.92 | 0.66× |
+| `c_f64_y_a_16x64x512x64` | 18901.54 | 29606.34 | 0.64× |
 | `c_f64_x_r_cumsum` | 6.82 | 10.91 | 0.62× |
+| `c_f64_x_a_long_kv` | 5384.50 | 8700.29 | 0.62× |
 | `c_f16_v_r_rowmax_wide` | 2.94 | 4.77 | 0.62× |
 | `c_f16_x_r_sumexp` | 2.94 | 4.77 | 0.62× |
+| `c_f64_v_a_256x16` | 1498.38 | 2434.51 | 0.62× |
 | `c_f64_x_a_16` | 15.55 | 25.76 | 0.60× |
-| `c_f64_y_a_32x64x64x64` | 359.04 | 612.93 | 0.59× |
-| `c_f64_y_s_1x2x48x64` | 803.04 | 1407.47 | 0.57× |
+| `c_f64_y_s_1x8x64x32` | 557.74 | 954.82 | 0.58× |
+| `c_f64_y_a_96x64x96x48` | 822.32 | 1416.56 | 0.58× |
 | `c_f16_x_a_long_kv` | 182.88 | 324.02 | 0.56× |
 | `c_f16_y_a_64x64x256x64` | 60.10 | 109.02 | 0.55× |
-| `c_f64_y_s_2x4x16x64` | 293.81 | 543.74 | 0.54× |
-| `c_f64_y_a_48x32x48x32` | 94.88 | 180.90 | 0.52× |
-| `c_f64_y_s_4x2x32x64` | 1272.26 | 2628.93 | 0.48× |
-| `c_f64_y_s_2x2x32x64` | 840.26 | 1785.09 | 0.47× |
-| `c_f64_v_a_32x64` | 188.91 | 453.28 | 0.42× |
-| `c_f64_y_s_1x4x128x64` | 6696.99 | 17056.03 | 0.39× |
+| `c_f64_y_s_1x2x48x64` | 759.39 | 1407.49 | 0.54× |
+| `c_f64_w_a_512x64` | 3779.57 | 7132.45 | 0.53× |
+| `c_f64_y_a_48x32x48x32` | 94.88 | 180.86 | 0.52× |
+| `c_f64_v_a_rect` | 492.03 | 981.47 | 0.50× |
+| `c_f64_y_s_4x2x32x64` | 1240.29 | 2628.86 | 0.47× |
+| `c_f64_y_a_64x64x32x64` | 293.76 | 635.92 | 0.46× |
+| `c_f64_y_s_2x4x16x64` | 250.82 | 543.52 | 0.46× |
+| `c_f64_v_a_32x64` | 189.06 | 453.15 | 0.42× |
+| `c_f64_y_a_32x64x64x64` | 246.43 | 612.86 | 0.40× |
+| `c_f64_y_s_1x4x128x64` | 5745.04 | 17055.26 | 0.34× |
+| `c_f64_y_s_2x2x32x64` | 570.66 | 1784.54 | 0.32× |
 | `c_f16_v_r_mean_rows` | 4.77 | — | no reference: NVRTC rejects its reference source |
 | `c_f16_x_r_mean_cols` | 4.77 | — | no reference: NVRTC rejects its reference source |
 | `c_f16_z_r_pow_mean` | 4.42 | — | no reference: NVRTC rejects its reference source |
@@ -411,7 +411,7 @@ The 49 attention and reduction problems above, with every input in f16 or f64. I
 ## How these were measured
 
 * **Time:** the median of 100 launches after a warmup (`tools/run_problems.py --iters 100`). Each compiler ran twice, the two alternating; each figure is the lower of its two runs.
-* **Ours:** `compile.py` as submitted, f64 computed in f32 (the default). Every change since commit f5af27d, where the f32, dtype and tensor-core rows were measured, leaves the PTX of those problems as it was; the f64 rows were measured again after the default changed. All problems pass.
+* **Ours:** `compile.py` as submitted, f64 computed in f32 (the default). Every change since commit f5af27d, where the f32, dtype and tensor-core rows were measured, leaves the PTX of those problems as it was; the f64 rows were measured again after the default changed, and the 46 whose PTX the f64 reads (integer rounding, fma) changed were measured again with this compiler. All problems pass.
 * **Reference:** Emmy's own CUDA for each problem (`*.ref.cu`), compiled to PTX with NVRTC and run under the same launch. That build is a yardstick only; it is not part of the compiler or of this repo.
 * **One session:** the runner's speed drifts by about 20% between sessions, so figures from different sessions do not compare; each row's two columns come from one session.
 * **Cold times differ:** without `--iters`, `run_problems.py` shows one cold launch per problem, which reads higher (a02: about 41 µs cold against 29.3 µs here).

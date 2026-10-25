@@ -55,9 +55,9 @@
 > **Results.** 15/15 open problems, 308/308 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
 > problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
-> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.85x on the attention and reduction
-> problems in f16 and f64. Of the 312 problems with a reference time, the only ones more than 3%
-> slower are four f64 SDPA kernels, 1.04x to 1.09x. Every problem is listed in [TIMINGS.md](TIMINGS.md).
+> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.79x on the attention and reduction
+> problems in f16 and f64 (f64 attention 0.60x). None of the 312 problems with a reference time is
+> more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
