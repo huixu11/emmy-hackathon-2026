@@ -564,7 +564,7 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
   `tests/problems_packed` (`tests/expressions_packed.py`). The seventh batch (`t_m_*`) holds the
   tensor-core matmuls, the eighth (`t_s_*`) f16 attention on tensor cores. The ninth (`c_*`,
   `tests/expressions_cross.py`) is the 15 open problems with every input in f16, bf16, f64 or
-  i32, and the 49 attention and reduction problems in f16 and f64; it found the seven gaps
+  i32, and the 49 attention and reduction problems in f16 and f64; it found the gaps
   listed under Data types.
 * `tests/test_compiler.py` runs offline (`python -m unittest discover -s tests`): every kernel of
   every problem compiles to its meta.json launch contract, gives the same PTX on every run
