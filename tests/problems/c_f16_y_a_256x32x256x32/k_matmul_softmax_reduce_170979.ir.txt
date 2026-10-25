@@ -1,0 +1,73 @@
+    Tile[a0_b, a5_b, a0_u, a5_u, _lane] (N=1024)
+        RegFragment c:f32 _c0_[2][4] (16x8x16)
+        Init(f32 acc1__r0_0 = -1e+30)
+        Init(f32 acc1__r0_1 = -1e+30)
+        Init(f32 acc3__r0_0 = 0.0)
+        Init(f32 acc3__r0_1 = 0.0)
+        RegFragment a:f16 _qa0_[2][4] (16x8x16)
+        for _r2 in 0..2:1
+            LdmatrixLoad _qa0_[_r2] <- q[(((a0_b * 256) + (a0_u * 16)) + 0), (_r2 * 16)] (gmem-direct, ldm=auto)
+        Smem __half _b_smem[64, 16] align=256
+        for _fb in ((((a0_u * 1) + a5_u) * 32) + _lane)..32:512
+            cp.async[16B] _b_smem[((_fb * 8) / 16), ((_fb * 8) % 16)] swz=B32 <- v[(0 + ((_fb * 8) / 16)), ((a5_b * 16) + ((_fb * 8) % 16))]
+        cp.async.commit_group
+        for _fb in ((((a0_u * 1) + a5_u) * 32) + _lane)..32:512
+            cp.async[16B] _b_smem[((1 * 16) + ((_fb * 8) / 16)), ((_fb * 8) % 16)] swz=B32 <- v[(16 + ((_fb * 8) / 16)), ((a5_b * 16) + ((_fb * 8) % 16))]
+        cp.async.commit_group
+        for _fb in ((((a0_u * 1) + a5_u) * 32) + _lane)..32:512
+            cp.async[16B] _b_smem[((2 * 16) + ((_fb * 8) / 16)), ((_fb * 8) % 16)] swz=B32 <- v[(32 + ((_fb * 8) / 16)), ((a5_b * 16) + ((_fb * 8) % 16))]
+        cp.async.commit_group
+        in0 = load mul_c1[0]
+        for a1__ck in 0..256:16
+            for _fb in ((((a0_u * 1) + a5_u) * 32) + _lane)..32:512
+                cp.async[16B] _b_smem[(((((a1__ck / 16) + 3) % 4) * 16) + ((_fb * 8) / 16)), ((_fb * 8) % 16)] swz=B32 <- v[((((a1__ck + 48) < 256) ? (a1__ck + 48) : 240) + ((_fb * 8) / 16)), ((a5_b * 16) + ((_fb * 8) % 16))]
+            cp.async.commit_group
+            cp.async.wait_group(3)
+            Sync
+            RegFragment b:f16 _kb[2][2] (16x8x16)
+            RegFragment c:f32 _s0_[2][4] (16x8x16)
+            for _r1 in 0..2:1
+                for _r0 in 0..2:1
+                    LdmatrixLoad _kb[_r0] <- kt[(_r1 * 16), (a1__ck + (_r0 * 8))] (gmem-direct, ldm=auto)
+                for _r0 in 0..2:1
+                    MmaSyncPtx _s0_[_r0] += _qa0_[_r1] @ _kb[_r0] (m16n8k16 f16)
+            FragmentApply(_w0_0_v1 <- copy(_s0_[0][]))
+            FragmentApply(_w0_0_v2 <- multiply(in0, _w0_0_v1[]))
+            FragmentApply(_w0_1_v1 <- copy(_s0_[1][]))
+            FragmentApply(_w0_1_v2 <- multiply(in0, _w0_1_v1[]))
+            FragmentRowReduce(_g__r0_0, _g__r0_1 <- _w0_0_v2, _w0_1_v2, op=maximum)
+            f32 _mg0_gn_0 = maximum(_g__r0_0, acc1__r0_0)
+            f32 _mg0_gn_1 = maximum(_g__r0_1, acc1__r0_1)
+            f32 _mg0_dg_0 = subtract(acc1__r0_0, _mg0_gn_0)
+            f32 _mg0_dg_1 = subtract(acc1__r0_1, _mg0_gn_1)
+            f32 _mg0_alpha_0 = exp(_mg0_dg_0)
+            f32 _mg0_alpha_1 = exp(_mg0_dg_1)
+            FragmentApply(_ch0_0_d <- subtract(_w0_0_v2[], ['_mg0_gn_0', '_mg0_gn_1']))
+            FragmentApply(_ch0_0_w <- exp(_ch0_0_d[]))
+            FragmentApply(_ch0_1_d <- subtract(_w0_1_v2[], ['_mg0_gn_0', '_mg0_gn_1']))
+            FragmentApply(_ch0_1_w <- exp(_ch0_1_d[]))
+            FragmentRowReduce(acc3__p0_0, acc3__p0_1 <- _ch0_0_w, _ch0_1_w, op=add)
+            f32 _mg0_acc3___scaled_0 = multiply(_mg0_alpha_0, acc3__r0_0)
+            f32 _mg0_acc3___scaled_1 = multiply(_mg0_alpha_1, acc3__r0_1)
+            f32 acc3__r0_0 <- add(_mg0_acc3___scaled_0, acc3__p0_0)
+            f32 acc3__r0_1 <- add(_mg0_acc3___scaled_1, acc3__p0_1)
+            for _r0 in 0..2:1
+                FragmentApply(_c0_[_r0] *= multiply(_c0_[_r0][], ['_mg0_alpha_0', '_mg0_alpha_1']))
+            RegFragment a:f16 _a0_0[4] (16x8x16)
+            RegFragment b:f16 _b0_0[2] (16x8x16)
+            RegFragment b:f16 _b1_0[2] (16x8x16)
+            FragmentRepack _a0_0 <- ('_ch0_0_w', '_ch0_1_w') (f16, m16n8k16, part=0)
+            LdmatrixLoad (_b0_0, _b1_0) <- _b_smem[((((a1__ck / 16) % 4) * 16) + 0), ((a5_u * 16) + 0)] (x4.trans pair, ldm=16)
+            MmaSyncPtx _c0_[0] += _a0_0 @ _b0_0 (m16n8k16 f16)
+            MmaSyncPtx _c0_[1] += _a0_0 @ _b1_0 (m16n8k16 f16)
+            f32 acc1__r0_0 <- maximum(acc1__r0_0, _g__r0_0)
+            f32 acc1__r0_1 <- maximum(acc1__r0_1, _g__r0_1)
+            Sync
+        f32 _ep0_0_v8_0 = reciprocal(acc3__r0_0)
+        f32 _ep0_0_v8_1 = reciprocal(acc3__r0_1)
+        FragmentApply(_ep0_0_acc5 <- multiply(_c0_[0][], ['_ep0_0_v8_0', '_ep0_0_v8_1']))
+        RegStore matmul_1[(((a0_b * 256) + (a0_u * 16)) + 0), (((a5_b * 16) + (a5_u * 16)) + 0)] <- _ep0_0_acc5 (ldm=auto)
+        f32 _ep0_1_v8_0 = reciprocal(acc3__r0_0)
+        f32 _ep0_1_v8_1 = reciprocal(acc3__r0_1)
+        FragmentApply(_ep0_1_acc5 <- multiply(_c0_[1][], ['_ep0_1_v8_0', '_ep0_1_v8_1']))
+        RegStore matmul_1[(((a0_b * 256) + (a0_u * 16)) + 0), (((a5_b * 16) + (a5_u * 16)) + 8)] <- _ep0_1_acc5 (ldm=auto)

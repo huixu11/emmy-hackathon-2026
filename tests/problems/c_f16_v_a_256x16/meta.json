@@ -1,0 +1,131 @@
+{
+ "id": "c_f16_v_a_256x16",
+ "code": "q = torch.randn(256, 16, dtype=torch.float16); kt = torch.randn(16, 256, dtype=torch.float16); v = torch.randn(256, 16, dtype=torch.float16); torch.softmax(q @ kt / 4.0, dim=-1) @ v",
+ "rtol": 0.02,
+ "atol": 0.02,
+ "graph_inputs": [
+  "q",
+  "kt",
+  "v"
+ ],
+ "graph_outputs": [
+  "matmul_1"
+ ],
+ "kernels": [
+  {
+   "node": "matmul_1__place_13f0030ab1_0",
+   "entry": "k_matmul_1__place_13f0030ab1_0",
+   "arg_order": [
+    "q",
+    "kt",
+    "matmul_1__place_13f0030ab1_0"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [
+    "matmul_1__place_13f0030ab1_0"
+   ],
+   "args": [
+    {
+     "name": "q",
+     "dtype": "f16",
+     "shape": [
+      256,
+      16
+     ],
+     "seed": 0
+    },
+    {
+     "name": "kt",
+     "dtype": "f16",
+     "shape": [
+      16,
+      256
+     ],
+     "seed": 1
+    },
+    {
+     "name": "matmul_1__place_13f0030ab1_0",
+     "dtype": "f32",
+     "shape": [
+      256,
+      256
+     ],
+     "output": true
+    }
+   ],
+   "final": false
+  },
+  {
+   "node": "matmul_1",
+   "entry": "k_matmul_softmax_reduce_063acd",
+   "arg_order": [
+    "matmul_1__place_13f0030ab1_0",
+    "div_c1",
+    "v",
+    "matmul_1"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "matmul_1__place_13f0030ab1_0",
+     "dtype": "f32",
+     "shape": [
+      256,
+      256
+     ],
+     "intermediate": true
+    },
+    {
+     "name": "div_c1",
+     "dtype": "f16",
+     "shape": [
+      1
+     ],
+     "data": [
+      4.0
+     ]
+    },
+    {
+     "name": "v",
+     "dtype": "f16",
+     "shape": [
+      256,
+      16
+     ],
+     "seed": 2
+    },
+    {
+     "name": "matmul_1",
+     "dtype": "f16",
+     "shape": [
+      256,
+      16
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

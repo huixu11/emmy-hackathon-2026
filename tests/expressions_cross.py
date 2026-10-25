@@ -1,6 +1,8 @@
-"""The 15 open problems again, with every input in f16, bf16, f64 or i32: the same kernels in
-each data type. The f16, f64 and i32 ones are in tests/problems; the bf16 ones, which the runner
-cannot allocate, are in tests/problems_packed (tests/expressions_packed.py takes them from here).
+"""The 15 open problems again, with every input in f16, bf16, f64 or i32, and the 49 attention
+and reduction problems of tests/expressions_variants.py in f16 and f64: the same kernels in
+other data types. The f16, f64 and i32 ones are in tests/problems; the bf16 ones, which the
+runner cannot allocate, are in tests/problems_packed (tests/expressions_packed.py takes them
+from here).
 
     python tools/generate.py tests/expressions_cross.py --emmy emmy --out tests/problems
 
@@ -9,6 +11,7 @@ stops in emmy's own lowering. i32 is left out where torch has no integer form (m
 softmax, division). emmy accumulates f64 matmuls in f32, as its own CUDA does, so those two
 are checked at f32 accuracy.
 """
+import importlib.util
 import json
 import re
 import sys
@@ -71,5 +74,24 @@ for meta in sorted(Path(__file__).resolve().parent.parent.glob("problems/*/meta.
         c = re.sub(r"torch\.randn\(([^)]*)\)", r"torch.randint(-3, 4, (\1,), dtype=torch.int32)", code)
         ALL.append(dict(id=f"c_i32_{pid}", code=c.replace("* 2.0 + 1.0", "* 2 + 1"),
                         ref=lambda *a, f=REFS[pid]: [np.rint(f(*a)).astype(np.int64)], rtol=0, atol=0))
+
+# The attention (`_a_`, `_s_`) and reduction (`_r_`) problems of tests/expressions_variants.py,
+# in f16 and f64. Their references compute in float64; f16 is checked at f16 accuracy, f64 at
+# the spec's own (f32) accuracy, since emmy keeps some f64 accumulators in f32. An f16 max is
+# exact; an f64 one is not, as emmy's tree combine goes through a `float` shared array.
+_spec = importlib.util.spec_from_file_location("variants", Path(__file__).resolve().parent / "expressions_variants.py")
+_variants = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_variants)
+for spec in _variants.OPEN:
+    if not re.match(r"[vwxyz]_[asr]_", spec["id"]):
+        continue
+    for name, torch_dtype in (("f16", "torch.float16"), ("f64", "torch.float64")):
+        tol = spec["rtol"], spec["atol"]
+        if name == "f16" and max(tol) > 0:
+            tol = max(tol[0], 2e-2), max(tol[1], 2e-2)
+        elif name == "f64" and max(tol) == 0:
+            tol = 1e-6, 1e-6
+        ALL.append(dict(spec, id=f"c_{name}_{spec['id']}", rtol=tol[0], atol=tol[1],
+                        code=re.sub(r"torch\.randn\(([^)]*)\)", rf"torch.randn(\1, dtype={torch_dtype})", spec["code"])))
 
 OPEN = [s for s in ALL if not s["id"].startswith("c_bf16_")]

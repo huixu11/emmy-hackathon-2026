@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from ptxc import CompileError, compile_file  # noqa: E402
+from ptxc import PTX_LIMIT, CompileError, compile_file  # noqa: E402
 from ptxc import dtypes as dt  # noqa: E402
 from ptxc.cse import eliminate_common_subexpressions  # noqa: E402
 from ptxc.ptx import Instr  # noqa: E402
@@ -52,6 +52,7 @@ class EveryProblem(unittest.TestCase):
                 params = re.findall(r"\.param \.u64 param_(\w+)", ptx)
                 self.assertEqual(params, launch["arg_order"])
                 self.assertIn(f".maxntid {launch['block'][0]}, 1, 1", ptx)
+                self.assertLessEqual(len(ptx), PTX_LIMIT)  # the runner's limit on a module
 
     @unittest.skipUnless(PTXAS, "ptxas not found (set $PTXAS or put it on PATH)")
     def test_assembles_with_ptxas(self):
@@ -138,6 +139,12 @@ class CommonSubexpressions(unittest.TestCase):
                         ("rcp.rn.f32", ["%f3", "%f1"]), ("st.global.f32", ["[%rd1+4]", "%f3"]))
         self.assertEqual(out, [("rcp.rn.f32", ["%f2", "%f1"]), ("st.global.f32", ["[%rd1]", "%f2"]),
                                ("st.global.f32", ["[%rd1+4]", "%f2"])])
+
+    def test_an_f64_round_trip_of_an_f32_is_the_f32(self):
+        out = self._cse(("ex2.approx.ftz.f32", ["%f2", "%f1"]), ("cvt.f64.f32", ["%fd1", "%f2"]),
+                        ("cvt.rn.f32.f64", ["%f3", "%fd1"]), ("add.rn.f32", ["%f4", "%f3", "%f3"]))
+        self.assertEqual(out, [("ex2.approx.ftz.f32", ["%f2", "%f1"]), ("cvt.f64.f32", ["%fd1", "%f2"]),
+                               ("add.rn.f32", ["%f4", "%f2", "%f2"])])
 
     def test_kept_when_a_source_changes_or_a_block_ends(self):
         changed = (("rcp.rn.f32", ["%f2", "%f1"]), ("add.f32", ["%f1", "%f1", "%f4"]), ("rcp.rn.f32", ["%f3", "%f1"]))

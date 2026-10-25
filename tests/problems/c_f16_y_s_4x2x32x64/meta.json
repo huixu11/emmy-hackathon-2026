@@ -1,0 +1,141 @@
+{
+ "id": "c_f16_y_s_4x2x32x64",
+ "code": "q = torch.randn(4, 2, 32, 64, dtype=torch.float16); k = torch.randn(4, 2, 32, 64, dtype=torch.float16); v = torch.randn(4, 2, 32, 64, dtype=torch.float16); torch.nn.functional.scaled_dot_product_attention(q, k, v)",
+ "rtol": 0.02,
+ "atol": 0.02,
+ "graph_inputs": [
+  "q",
+  "k",
+  "v"
+ ],
+ "graph_outputs": [
+  "scaled_dot_product_attention"
+ ],
+ "kernels": [
+  {
+   "node": "scaled_dot_product_attention__place_14f9d6bfef_0",
+   "entry": "k_scaled_dot_product_attention__place_14f9d6bfef_0",
+   "arg_order": [
+    "q",
+    "k",
+    "scaled_dot_product_attention__place_14f9d6bfef_0"
+   ],
+   "grid": [
+    512,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [
+    "scaled_dot_product_attention__place_14f9d6bfef_0"
+   ],
+   "args": [
+    {
+     "name": "q",
+     "dtype": "f16",
+     "shape": [
+      4,
+      2,
+      32,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "k",
+     "dtype": "f16",
+     "shape": [
+      4,
+      2,
+      32,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "scaled_dot_product_attention__place_14f9d6bfef_0",
+     "dtype": "f32",
+     "shape": [
+      8,
+      32,
+      32
+     ],
+     "output": true
+    }
+   ],
+   "final": false
+  },
+  {
+   "node": "scaled_dot_product_attention",
+   "entry": "k_sdpa_6ad5fa",
+   "arg_order": [
+    "scaled_dot_product_attention__place_14f9d6bfef_0",
+    "scaled_dot_product_attention_scale",
+    "v",
+    "scaled_dot_product_attention"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "scaled_dot_product_attention__place_14f9d6bfef_0",
+     "dtype": "f32",
+     "shape": [
+      8,
+      32,
+      32
+     ],
+     "intermediate": true
+    },
+    {
+     "name": "scaled_dot_product_attention_scale",
+     "dtype": "f16",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.125
+     ]
+    },
+    {
+     "name": "v",
+     "dtype": "f16",
+     "shape": [
+      4,
+      2,
+      32,
+      64
+     ],
+     "seed": 2
+    },
+    {
+     "name": "scaled_dot_product_attention",
+     "dtype": "f16",
+     "shape": [
+      4,
+      2,
+      32,
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

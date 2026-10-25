@@ -1,0 +1,122 @@
+    Tile[a0, a5, a1_co] (N=196608)
+        in0 = load mul_c1[0]
+        for a1 in 0..128:2
+            for a2 in 0..32
+                in2 = load q[a0, a2]
+                in1 = load kt[a2, a1]
+                f64 v0 = multiply(in1, in2)
+                f32 acc0 <- add(acc0, v0)
+            f64 v1 = copy(acc0)
+            f64 v2 = multiply(in0, v1)
+            f64 acc1 <- maximum(acc1, v2)
+            for a2 in 0..32
+                in2__r1 = load q[a0, a2]
+                in1__r1 = load kt[a2, (a1 + 1)]
+                f64 v0__r1 = multiply(in1__r1, in2__r1)
+                f32 acc0__r1 <- add(acc0__r1, v0__r1)
+            f64 v1__r1 = copy(acc0__r1)
+            f64 v2__r1 = multiply(in0, v1__r1)
+            f64 acc1__r1 <- maximum(acc1__r1, v2__r1)
+        f32 acc1 <- maximum(acc1, acc1__r1)
+        for a1 in a1_co..128:128
+            for a4 in 0..32
+                in4 = load q[a0, a4]
+                in3 = load kt[a4, a1]
+                f64 v3 = multiply(in3, in4)
+                f32 acc2 <- add(acc2, v3)
+            f64 v4 = copy(acc2)
+            f64 v5 = multiply(in0, v4)
+            f64 v6 = subtract(v5, acc1)
+            f64 v7 = exp(v6)
+            f32 acc3 <- add(acc3, v7)
+            for a4 in 0..32
+                in4__r1 = load q[a0, a4]
+                in3__r1 = load kt[a4, (a1 + 64)]
+                f64 v3__r1 = multiply(in3__r1, in4__r1)
+                f32 acc2__r1 <- add(acc2__r1, v3__r1)
+            f64 v4__r1 = copy(acc2__r1)
+            f64 v5__r1 = multiply(in0, v4__r1)
+            f64 v6__r1 = subtract(v5__r1, acc1)
+            f64 v7__r1 = exp(v6__r1)
+            f32 acc3__r1 <- add(acc3__r1, v7__r1)
+        f32 acc3 <- add(acc3, acc3__r1)
+        WarpShuffle(acc3, length=32)
+        Smem float acc3_smem[2]
+        if ((lane == 0)):
+            acc3_smem[warp] = acc3
+        Sync
+        TreeHalve(acc3, length=2, tid=warp)
+        f32 v8 = reciprocal(acc3)
+        for a6 in a1_co..128:256
+            for a7 in 0..32
+                in6 = load q[a0, a7]
+                in5 = load kt[a7, a6]
+                f64 v9 = multiply(in5, in6)
+                f32 acc4 <- add(acc4, v9)
+            f64 v10 = copy(acc4)
+            f64 v11 = multiply(in0, v10)
+            f64 v12 = subtract(v11, acc1)
+            f64 v13 = exp(v12)
+            f32 v14 = multiply(v13, v8)
+            in7 = load v[a6, a5]
+            f64 v15 = multiply(in7, v14)
+            f32 acc5 <- add(acc5, v15)
+            for a7 in 0..32
+                in6__r1 = load q[a0, a7]
+                in5__r1 = load kt[a7, ((a6 + 64) % 128)]
+                f64 v9__r1 = multiply(in5__r1, in6__r1)
+                f32 acc4__r1 <- add(acc4__r1, v9__r1)
+            f64 v10__r1 = copy(acc4__r1)
+            f64 v11__r1 = multiply(in0, v10__r1)
+            f64 v12__r1 = subtract(v11__r1, acc1)
+            f64 v13__r1 = exp(v12__r1)
+            f32 v14__r1 = multiply(v13__r1, v8)
+            in7__r1 = load v[((a6 + 64) % 128), a5]
+            f64 v15__r1 = multiply(in7__r1, v14__r1)
+            Init(f32 v15__r1__id = 0.0)
+            v15__r1__m = v15__r1 when (((a6 + 64) < 128))
+                         v15__r1__id when (1)
+            f32 acc5__r1 <- add(acc5__r1, v15__r1__m)
+            for a7 in 0..32
+                in6__r2 = load q[a0, a7]
+                in5__r2 = load kt[a7, ((a6 + 128) % 128)]
+                f64 v9__r2 = multiply(in5__r2, in6__r2)
+                f32 acc4__r2 <- add(acc4__r2, v9__r2)
+            f64 v10__r2 = copy(acc4__r2)
+            f64 v11__r2 = multiply(in0, v10__r2)
+            f64 v12__r2 = subtract(v11__r2, acc1)
+            f64 v13__r2 = exp(v12__r2)
+            f32 v14__r2 = multiply(v13__r2, v8)
+            in7__r2 = load v[((a6 + 128) % 128), a5]
+            f64 v15__r2 = multiply(in7__r2, v14__r2)
+            Init(f32 v15__r2__id = 0.0)
+            v15__r2__m = v15__r2 when (((a6 + 128) < 128))
+                         v15__r2__id when (1)
+            f32 acc5__r2 <- add(acc5__r2, v15__r2__m)
+            for a7 in 0..32
+                in6__r3 = load q[a0, a7]
+                in5__r3 = load kt[a7, ((a6 + 192) % 128)]
+                f64 v9__r3 = multiply(in5__r3, in6__r3)
+                f32 acc4__r3 <- add(acc4__r3, v9__r3)
+            f64 v10__r3 = copy(acc4__r3)
+            f64 v11__r3 = multiply(in0, v10__r3)
+            f64 v12__r3 = subtract(v11__r3, acc1)
+            f64 v13__r3 = exp(v12__r3)
+            f32 v14__r3 = multiply(v13__r3, v8)
+            in7__r3 = load v[((a6 + 192) % 128), a5]
+            f64 v15__r3 = multiply(in7__r3, v14__r3)
+            Init(f32 v15__r3__id = 0.0)
+            v15__r3__m = v15__r3 when (((a6 + 192) < 128))
+                         v15__r3__id when (1)
+            f32 acc5__r3 <- add(acc5__r3, v15__r3__m)
+        f32 acc5 <- add(acc5, acc5__r1)
+        f32 acc5 <- add(acc5, acc5__r2)
+        f32 acc5 <- add(acc5, acc5__r3)
+        WarpShuffle(acc5, length=32)
+        Smem float acc5_smem[2]
+        if ((lane == 0)):
+            acc5_smem[warp] = acc5
+        Sync
+        TreeHalve(acc5, length=2, tid=warp)
+        if ((a1_co == 0)):
+            matmul_1[a0, a5] = acc5
