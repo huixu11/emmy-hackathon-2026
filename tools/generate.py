@@ -61,6 +61,21 @@ def flat(dimspec) -> int:
     return total
 
 
+def producers_first(kernels: list[dict], cuda_graph: dict) -> list[dict]:
+    """The kernels in an order that runs each after those whose outputs it reads (submit.py
+    runs them in meta.json's order). The cuda stage lists split-K's reduction kernel, which
+    reads the partial sums, ahead of the kernel that adds them up; otherwise its order stays."""
+    writes = {k["node"]: {t["name"] for t in cuda_graph["nodes"][k["node"]]["outputs"]} for k in kernels}
+    ordered, left = [], list(kernels)
+    while left:
+        done = set().union(*(writes[k["node"]] for k in ordered))
+        ready = [k for k in left if all(a["name"] in done for a in k["args"] if a.get("intermediate"))]
+        k = ready[0] if ready else left[0]  # a missing producer: keep the stage's order
+        ordered.append(k)
+        left.remove(k)
+    return ordered
+
+
 def trace(emmy: str, spec: dict, dump: Path, target: str) -> None:
     # No machine-local evidence (tune DB, online prior, goldens), so one emmy release gives the
     # same IR on any machine. A spec's `knobs` pins the schedule where its category depends on it.
@@ -145,6 +160,7 @@ def package(spec: dict, dump: Path, outdir: Path, hidden: bool = False) -> dict:
                                  intermediate=True))
         k["args"] = args
         k["final"] = bool(outs & graph_outputs)
+    kernels = producers_first(kernels, cuda_graph)
 
     # ---- expected outputs from the seeded inputs -------------------------
     DT = {"f32": np.float32, "f16": np.float16, "f64": np.float64,
