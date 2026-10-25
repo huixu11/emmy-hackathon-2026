@@ -5,19 +5,28 @@
 | f32 | 4 bytes | an f32 register | fmath.py |
 | f16, bf16 | 2 bytes | an f32 register, at 16-bit precision | fmath.py in f32, then one rounding to the dtype |
 | bool | 1 byte | an f32 register, 1.0 or 0.0 | the comparison and logic ops of fmath.py |
-| f64 | 8 bytes | an f64 register | add, mul, div, sqrt, ... in f64; other functions through f32 |
+| f64 | 8 bytes | an f32 register, as emmy's CUDA holds it; or, exact (--exact-f64), an f64 register | f32, as emmy's CUDA; exact: add, mul, div, sqrt, ... in f64, other functions through f32 |
 | i32, i64 | 4, 8 bytes | a b32 / b64 register | integer instructions, floor division and modulo as in torch |
 
 A 16-bit float always holds a value its dtype can represent, so it converts to f32 for free and
 an operation on it is an f32 operation plus one rounding. For add, subtract and multiply that
 is exactly the correctly rounded 16-bit result (the f32 sum or product of two 16-bit values is
 exact, or too far from a rounding boundary to matter), which is what torch computes.
+
+An f64 value is held in an f32 register by default, as emmy's own CUDA does (it declares every
+f64 local `float`): it is read with `cvt.rn.f32.f64`, computed in f32 and written back with
+`cvt.f64.f32`. f64 arithmetic runs at 1/64 of the f32 rate on the GPUs sm_89 PTX is for (every
+Ada part, and the RTX 5090 runner), and emmy's IR keeps the sums and maxima of f64 kernels in
+f32 anyway. `exact_f64(True)` holds f64 values in f64 registers instead, for a GPU with fast f64
+(A100, H100: 1/2 rate) or a kernel that needs the precision.
 """
 
 from __future__ import annotations
 
 import math
 import struct
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .errors import CompileError
@@ -49,7 +58,8 @@ class DType:
 F32 = DType("f32", 4, "f32", "f32", "f32")
 F16 = DType("f16", 2, "f32", "b16", "b16")
 BF16 = DType("bf16", 2, "f32", "b16", "b16")
-F64 = DType("f64", 8, "f64", "f64", "f64")
+F64 = DType("f64", 8, "f64", "f64", "f64")          # exact: an f64 register
+F64_AS_F32 = DType("f64", 8, "f32", "f64", "f64")   # the default: an f32 register, as emmy's CUDA
 I32 = DType("i32", 4, "b32", "s32", "b32")
 I64 = DType("i64", 8, "b64", "s64", "b64")
 BOOL = DType("bool", 1, "f32", "u8", "b32")
@@ -57,6 +67,19 @@ BOOL = DType("bool", 1, "f32", "u8", "b32")
 _BY_NAME = {d.name: d for d in (F32, F16, BF16, F64, I32, I64, BOOL)}
 _ALIASES = {"float": F32, "half": F16, "__half": F16, "__nv_bfloat16": BF16, "double": F64,
             "int": I32, "int32": I32, "int64": I64, "long": I64}
+
+
+_EXACT_F64 = [False]  # set for one compile by exact_f64()
+
+
+@contextmanager
+def exact_f64(exact: bool) -> Iterator[None]:
+    """Within the block, f64 values are held in f64 registers (exact) or in f32 ones."""
+    saved, _EXACT_F64[0] = _EXACT_F64[0], exact
+    try:
+        yield
+    finally:
+        _EXACT_F64[0] = saved
 
 
 def dtype(d) -> DType:
@@ -67,7 +90,7 @@ def dtype(d) -> DType:
     found = _BY_NAME.get(name) or _ALIASES.get(name)
     if found is None:
         raise CompileError(f"dtype {name} is not supported")
-    return found
+    return F64_AS_F32 if found is F64 and not _EXACT_F64[0] else found
 
 
 def common(dtypes: list[DType]) -> DType:
@@ -197,6 +220,8 @@ def from_memory(b: PtxBuilder, regs: list[str], d: DType) -> list[str]:
             zero = b.reg("b16")
             b.emit("mov.b16", zero, "0")
             b.emit("mov.b32", v, "{" + f"{zero}, {r}" + "}")
+        elif d.name == "f64":  # held in f32
+            b.emit("cvt.rn.f32.f64", v, r)
         else:  # bool: one byte, 0 or 1
             b.emit("cvt.rn.f32.u32", v, r)
         out.append(v)
@@ -212,6 +237,11 @@ def to_memory(b: PtxBuilder, value: str, d: DType) -> str:
         b.emit("cvt.rn.f16.f32", out, value)
     elif d.name == "bf16":
         b.emit("cvt.rn.bf16.f32", out, value)
+    elif d.name == "f64":  # held in f32
+        if is_register(value):
+            b.emit("cvt.f64.f32", out, value)
+        else:
+            b.emit("mov.f64", out, f64_imm(_imm(value)))
     else:  # bool
         b.emit("cvt.rzi.u32.f32", out, value)
     return out

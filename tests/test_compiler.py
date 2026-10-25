@@ -4,8 +4,8 @@
 
 Every problem under problems/, tests/problems and tests/problems_packed must compile to PTX
 whose entry and parameters match meta.json, and the same PTX on every run. With ptxas on PATH
-(or named by $PTXAS) each module must also assemble for sm_89. The checks on the GPU are
-tools/run_problems.py and tools/run_packed.py.
+(or named by $PTXAS) each module must also assemble for sm_89, the f64 ones in both f64 modes.
+The checks on the GPU are tools/run_problems.py and tools/run_packed.py.
 """
 
 from __future__ import annotations
@@ -58,12 +58,13 @@ class EveryProblem(unittest.TestCase):
     def test_assembles_with_ptxas(self):
         with tempfile.TemporaryDirectory() as td:
             for ir in KERNELS:
-                with self.subTest(kernel=f"{ir.parent.name}/{ir.name}"):
-                    path = Path(td) / "k.ptx"
-                    path.write_text(compile_file(str(ir)))
-                    r = subprocess.run([PTXAS, "-arch=sm_89", str(path), "-o", os.devnull],
-                                       capture_output=True, text=True)
-                    self.assertEqual(r.returncode, 0, r.stderr[-500:])
+                for exact in (False, True) if "f64" in ir.parent.name else (False,):
+                    with self.subTest(kernel=f"{ir.parent.name}/{ir.name}", exact_f64=exact):
+                        path = Path(td) / "k.ptx"
+                        path.write_text(compile_file(str(ir), exact_f64=exact))
+                        r = subprocess.run([PTXAS, "-arch=sm_89", str(path), "-o", os.devnull],
+                                           capture_output=True, text=True)
+                        self.assertEqual(r.returncode, 0, r.stderr[-500:])
 
     def test_same_ptx_on_every_run(self):
         """Nothing may depend on Python's string hashing, which changes from process to process."""
@@ -112,10 +113,21 @@ class DataTypes(unittest.TestCase):
         self.assertEqual(dt.immediate(-1e30, dt.I32), str(-2 ** 31))
         self.assertEqual(dt.immediate(float("inf"), dt.I64), str(2 ** 63 - 1))
 
+    def test_f64_is_computed_in_f32_unless_exact(self):
+        """By default an f64 value is held in f32, as emmy's CUDA holds it; --exact-f64 keeps f64."""
+        ir = next(p for p in KERNELS if p.parent.name == "d_p_f64_mul")
+        default, exact = compile_file(str(ir), exact_f64=False), compile_file(str(ir), exact_f64=True)
+        self.assertIn("cvt.rn.f32.f64", default)
+        self.assertIn("mul.rn.f32", default)
+        self.assertIn("cvt.f64.f32", default)
+        self.assertNotIn("mul.rn.f64", default)
+        self.assertIn("mul.rn.f64", exact)
+        self.assertNotIn("cvt.rn.f32.f64", exact)
+
     def test_f64_states_cross_lanes_in_two_halves(self):
         """shfl.sync moves 32 bits: an f64 running max goes over as two halves."""
         ir = next(p for p in KERNELS if p.parent.name == "c_f64_f02_row_softmax")
-        ptx = compile_file(str(ir))
+        ptx = compile_file(str(ir), exact_f64=True)
         self.assertRegex(ptx, r"mov\.b64\s+\{%r\d+, %r\d+\}, %fd\d+;")
         self.assertRegex(ptx, r"mov\.b64\s+%fd\d+, \{%r\d+, %r\d+\};")
         self.assertNotRegex(ptx, r"shfl\.sync\.bfly\.b32\s+%f\d+, %fd")
