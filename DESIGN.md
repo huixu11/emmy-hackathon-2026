@@ -398,7 +398,7 @@ stored (`RegStore`'s guards). The `RegStore` epilogue is a small function of the
 column in the tile (`__N__`) and names in scope: a bias load and add for `linear`, a relu.
 
 All 9 f16 matmuls in `tests/problems` (64 to 512, 96x80x112, 100x70x50, batched, `linear` with
-bias, relu) and both bf16 ones in `tests/problems_packed` pass, at 0.98x the reference's time.
+bias, relu) and both bf16 ones in `tests/problems_packed` pass, at 1.00x the reference's time.
 
 ### Attention on tensor cores
 
@@ -433,26 +433,28 @@ not part of the compiler.
 
 | problem | first version | now | reference |
 |---|---|---|---|
-| m01_matmul_512 | 29.4 us | 15.0 us | 15.1 us |
-| a01_attention | | 41.6 us | 74.4 us |
-| a02_attention_128 | 72.4 us | 29.3 us | 29.4 us |
-| r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
+| m01_matmul_512 | 29.4 us | 15.0 us | 15.6 us |
+| a01_attention | | 41.6 us | 74.3 us |
+| a02_attention_128 | 72.4 us | 29.3 us | 29.3 us |
+| r02_big_sum | 21.2 us | 8.8 us | 10.8 us |
 | f01_rmsnorm | | 3.3 us | 4.8 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.0 us |
 | w_a_512x64 | 223.8 us | 170.6 us | 354.9 us |
-| w_a_sdpa | | 21.2 us | 49.8 us |
-| v_a_32x64 | | 13.0 us | 23.2 us |
-| v_a_rect | | 33.4 us | 60.0 us |
+| w_a_sdpa | | 21.1 us | 49.8 us |
+| v_a_32x64 | | 12.9 us | 23.2 us |
+| v_a_rect | | 33.4 us | 60.8 us |
 | x_a_cross | | 27.3 us | 109.2 us |
-| y_a_16x64x512x64 | | 193.2 us | 434.7 us |
-| z_p_pow_frac_big | | 3.1 us | 4.8 us |
+| y_a_16x64x512x64 | | 193.1 us | 434.8 us |
+| z_p_pow_frac_big | | 3.1 us | 4.7 us |
 | geometric mean of time / reference, the first 66 problems | 1.12x | 0.90x | 1.00x |
 | geometric mean of time / reference, all 147 with a reference | | 0.84x | 1.00x |
 
-By category, over all 147: pointwise 0.98x, reductions 0.93x, matmul 0.95x, fused 0.88x,
-attention 0.54x. The "now" and "reference" columns come from one run of both compilers, back
-to back: the runner's speed drifts by about 20% between sessions, so figures from different
-sessions do not compare.
+By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
+attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
+matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x. The "now" and "reference"
+columns come from two runs of both compilers, alternating, taking the lower time of each: the
+runner's speed drifts by about 20% between sessions, so figures from different sessions do
+not compare. Every problem's figures are in [TIMINGS.md](TIMINGS.md).
 
 Two problems have no reference time: NVRTC rejects `v_p_log`'s reference source, and the
 reference gets `x_p_fma_5000` (`x * y + z`, checked with zero tolerance) wrong, because nvcc
@@ -477,9 +479,9 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 9. Accumulators that always hold equal values computed once (under Loops): half the exps
    in most attention kernels (`v_a_rect`: 58.0 -> 33.4 us).
 
-No problem is slower than the reference beyond the noise. Kernels of about 3 us jump by
-0.5 us now and then: `x_p_outer_bcast` and `x_m_bmm_bcast` read 1.18x and 1.16x in this run,
-and 1.00x when run again.
+No problem is slower than the reference beyond the noise: none of the 181 with a reference
+time is more than 3% slower. Kernels of about 3 us jump by 0.5 us now and then:
+`x_p_outer_bcast` and `x_m_bmm_bcast` once read 1.18x and 1.16x, and 1.01x here.
 
 Attention kernels with few blocks (`v_a_rect` runs 4 blocks of 256 threads) are bound by the
 latency of each key's trip, and ptxas's schedule of that trip moves their time by tens of

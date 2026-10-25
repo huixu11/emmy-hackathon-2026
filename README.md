@@ -47,8 +47,9 @@
 >
 > **Results.** 15/15 open problems, 171/171 in `tests/problems`, 10/10 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
-> problems with a reference time, 0.54x on attention; 0.97x on the 19 dtype problems, 0.98x on
-> the 9 tensor-core matmuls and 0.82x on the 9 f16 attention problems (none above 1.01x).
+> problems with a reference time, 0.54x on attention; 0.97x on the dtype problems, 1.00x on
+> the 9 tensor-core matmuls and 0.82x on the 9 f16 attention problems. None of the 181 problems
+> with a reference time is more than 3% slower; every one is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
@@ -60,7 +61,8 @@
 > | `examples/compiled/` | seven kernels' IR next to our PTX, with notes on what to look for |
 > | `tools/pow_sweep.py` | `pow` on 27 exponents and the special values, against C's `pow` |
 >
-> [DESIGN.md](DESIGN.md) explains how each IR statement becomes PTX, and why.
+> [DESIGN.md](DESIGN.md) explains how each IR statement becomes PTX, and why; [TIMINGS.md](TIMINGS.md)
+> has every problem's time against the reference.
 
 # Emmy Hackathon — write a PTX compiler for Kernel IR
 
