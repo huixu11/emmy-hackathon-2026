@@ -12,15 +12,22 @@ memory is read element by element in the same lane map, clamping rows past M or 
 last one and zero-filling K past its end (an mma sums over K, so a duplicate would count).
 Shared tiles are swizzled: element e lives at e ^ (((e >> s) & m) << 3), the XOR that moves
 16-byte chunks across banks, applied on the fill (cp.async) and on every ldmatrix read alike.
+
+Attention keeps its scores in C fragments between two mmas: FragmentApply is elementwise
+arithmetic on them (the causal mask included), FragmentRowReduce a row's max or sum across
+the 4 lanes that hold it, and FragmentRepack turns f32 C fragments into the 16-bit A operand.
 """
 
 from __future__ import annotations
 
 import re
 
+from emmy.compiler.ir.expr import Literal
+
 from . import dtypes as dt
 from .errors import CompileError
 from .facts import Fact
+from .fmath import emit_elementwise
 from .index import Lin
 
 # swizzle span -> mask of the bits XORed into bits 3.. of a 16-bit element index; "B128@7"
@@ -91,16 +98,18 @@ class TensorCores:
         if array is None or array.dtype.nbytes != 2:
             raise CompileError(f"ldmatrix from {ld.src_buffer!r}: a 16-bit shared array is needed")
         lane = self._lane()
+        ldm = ld.ldm or array.extents[-1]
         if ld.role == "a":  # rows 0-15 at k 0 (lanes 0-15), then at k 8: a0..a3
-            offset, count, trans = self._lane_rows(lane % 16, ld.ldm, lane // 16), 4, False
+            offset, count, trans = self._lane_rows(lane % 16, ldm, lane // 16), 4, False
         elif not ld.b_trans and pair is not None:  # K rows of two column-adjacent B fragments
-            offset, count, trans = self._lane_rows(lane % 16, ld.ldm, lane // 16), 4, True
+            offset, count, trans = self._lane_rows(lane % 16, ldm, lane // 16), 4, True
         elif not ld.b_trans:  # the 16 K rows of one B fragment, transposed into place
-            offset, count, trans = self._lane_rows(lane % 16, ld.ldm, None), 2, True
-        elif pair is None:  # B stored N x K (x @ w.T): its rows are the fragment's columns
-            offset, count, trans = self._lane_rows(lane % 8, ld.ldm, (lane // 8) % 2), 2, False
-        else:
-            raise CompileError("a paired ldmatrix of an N x K operand is not supported")
+            offset, count, trans = self._lane_rows(lane % 16, ldm, None), 2, True
+        elif pair is None:  # B stored N x K (q @ k.T): its rows are the fragment's columns
+            offset, count, trans = self._lane_rows(lane % 8, ldm, (lane // 8) % 2), 2, False
+        else:  # two N-adjacent fragments of an N x K operand: lanes 16-31 address rows 8-15
+            rows = self.idx.add((lane % 8).lin, self.idx.mul((lane // 16).lin, Lin(None, 8)))
+            offset, count, trans = self._lane_rows(_Lane(self.idx, rows), ldm, (lane // 8) % 2), 4, False
         element = self.idx.add(self._flat(ld.src_buffer, ld.src_index), offset)
         element = self._swizzle(element, ld.swizzle)
         _, addr = self._address(ld.src_buffer, element)
@@ -125,7 +134,7 @@ class TensorCores:
         lane = self._lane()
         g, t2 = (lane // 4).lin, self.idx.mul((lane % 4).lin, Lin(None, 2))
         base = self._flat(ld.src_buffer, ld.src_index)
-        ldm = ld.ldm
+        ldm = ld.ldm or self.kernel.buffers[ld.src_buffer].shape[-1]  # 0: the row-major stride
         last = None
         if ld.gmem_guard is not None:  # in-range rows (or columns) from the tile base, minus one
             coord, bound = (self.idx.value(e) for e in ld.gmem_guard)
@@ -269,6 +278,120 @@ class TensorCores:
             stride *= extent
         return flat
 
+    # ---- fragment arithmetic (tensor-core attention) -----------------------------------------
+
+    def visit_FragmentApply(self, fa) -> None:
+        """out[e] = post(op(args at element e)) for the 4 elements of a C fragment. An argument
+        is a fragment (its element e), a uniform scalar, a per-row pair (the element's row picks
+        one) or a predicate over the element's absolute row and column (__frow, __fcol: a causal
+        mask). out is a new fragment, or the first fragment argument's registers in place."""
+        layout = _m16n8(fa.layout)
+        for kind in fa.kinds:
+            if kind not in ("frag", "uniform", "row", "coord"):
+                raise CompileError(f"FragmentApply argument kind {kind!r} is not supported")
+        srcs = [self._fragment(a) if k == "frag" else None for a, k in zip(fa.args, fa.kinds)]
+        results = []  # every element reads its arguments before any is written (in place)
+        for e in range(layout.n_elems):
+            args = []
+            for a, k, src in zip(fa.args, fa.kinds, srcs):
+                if k == "frag":
+                    args.append(src[e])
+                elif k == "row":
+                    args.append(self._value(a[layout.elem_row[e]], dt.F32))
+                elif k == "coord":
+                    args.append(self._at_element(fa, layout, e, lambda: self.idx.pred(a)))
+                elif isinstance(a, str):
+                    args.append(self._value(a, dt.F32))
+                elif isinstance(a, Literal):
+                    args.append(dt.immediate(float(a.value), dt.F32))
+                else:
+                    raise CompileError(f"FragmentApply uniform argument {a!r} is not supported")
+            value = self._element_op(fa.op.name, args)
+            for post in fa.post:
+                value = self._element_op(post.name, [value])
+            results.append(value)
+        if fa.in_place:
+            for reg, value in zip(self._fragment(fa.out), results):
+                self.b.emit("mov.f32", reg, value)
+        else:  # the results are fresh registers: they become the new fragment
+            self._frags[fa.out] = [results]
+
+    def _element_op(self, op: str, args: list) -> str:
+        """op on one element's arguments (f32 operands, or predicates from a coordinate test),
+        into a fresh register."""
+        if op == "where" and _is_predicate(args[0]):
+            cond, a, c = args
+            r = self.b.reg("f32")
+            if isinstance(cond, bool):
+                self.b.emit("mov.f32", r, a if cond else c)
+            else:
+                self.b.emit("selp.f32", r, a, c, cond)
+            return r
+        operands = []
+        for a in args:
+            if isinstance(a, bool):
+                a = dt.immediate(float(a), dt.F32)
+            elif _is_predicate(a):  # a predicate as a value: 1.0 or 0.0
+                r = self.b.reg("f32")
+                self.b.emit("selp.f32", r, dt.immediate(1.0, dt.F32), dt.immediate(0.0, dt.F32), a)
+                a = r
+            operands.append(a)
+        r = self.b.reg("f32")
+        emit_elementwise(self.b, op, r, operands)
+        return r
+
+    def _at_element(self, fa, layout, e: int, compute):
+        """compute() with __frow / __fcol bound to element e's absolute row and column: the
+        tile origin (row_base, col_base) plus the layout's offsets for this lane."""
+        lane = self._lane()
+        with self.scopes.nested():
+            self.scopes.define("_g", (lane // 4).lin)
+            self.scopes.define("_t", (lane % 4).lin)
+            if fa.row_base is not None:
+                row = self.idx.add(self.idx.value(fa.row_base), self.idx.value(layout.row_off[layout.elem_row[e]]))
+                self.scopes.define("__frow", row)
+            if fa.col_base is not None:
+                col = self.idx.add(self.idx.value(fa.col_base), self.idx.value(layout.col_off[e]))
+                self.scopes.define("__fcol", col)
+            return compute()
+
+    def visit_FragmentRowReduce(self, rr) -> None:
+        """top / bot = op over the elements of all `frags` in the lane's first / second row,
+        then over the 4 lanes holding the rest of that row (shfl.bfly by 2, then by 1)."""
+        layout = _m16n8(rr.layout)
+        if dt.dtype(rr.dtype) is not dt.F32:
+            raise CompileError(f"a row reduction in {rr.dtype} is not supported")
+        op = rr.op.name
+        for row, name in enumerate((rr.top, rr.bot)):
+            acc = None
+            for frag in rr.frags:
+                regs = self._fragment(frag)
+                for e in range(layout.n_elems):
+                    if layout.elem_row[e] == row:
+                        acc = regs[e] if acc is None else self._element_op(op, [acc, regs[e]])
+            for x in layout.reduce_xors:
+                other = self.b.reg("f32")
+                self.b.emit("shfl.sync.bfly.b32", other, acc, x, "0x1f", "0xffffffff")
+                acc = self._element_op(op, [acc, other])
+            self._types[name] = dt.F32
+            if self.scopes.find(name) is None:
+                self.scopes.define(name, acc)
+            else:
+                self.b.emit("mov.f32", self._register(name), acc)
+
+    def visit_FragmentRepack(self, rp) -> None:
+        """A 16-bit A fragment from two f32 C fragments side by side (k 0-7, then k 8-15): C's
+        and A's lane maps line up, so each A register is two neighbouring C values, rounded
+        (the first in the low half)."""
+        if rp.fragment_layout != "m16n8k16" or rp.part != 0 or len(rp.srcs) != 2:
+            raise CompileError("this FragmentRepack form is not supported")
+        if rp.ab_dtype not in ("f16", "bf16"):
+            raise CompileError(f"repack to {rp.ab_dtype} is not supported")
+        lo, hi = (self._fragment(src) for src in rp.srcs)
+        pairs = [(lo[0], lo[1]), (lo[2], lo[3]), (hi[0], hi[1]), (hi[2], hi[3])]
+        for reg, (first, second) in zip(self._fragment(rp.frag), pairs):
+            self.b.emit(f"cvt.rn.{rp.ab_dtype}x2.f32", reg, second, first)
+
     # ---- lanes and swizzles ------------------------------------------------------------------
 
     def _lane(self) -> _Lane:
@@ -317,4 +440,19 @@ def _regs(regs: list[str]) -> str:
     return "{" + ", ".join(regs) + "}"
 
 
-FRAGMENT_FIELDS = ("frag", "pair_frag", "c_frag", "a_frag", "b_frag")
+def _is_predicate(operand) -> bool:
+    """A coordinate test's result: a predicate register, or a Python bool when it is known."""
+    return isinstance(operand, bool) or operand.startswith("%p")
+
+
+def _m16n8(layout):
+    """The m16n8 C layout, the one the fragment statements are written for: 4 elements per lane,
+    rows g (elements 0, 1) and g + 8 (2, 3), a row's columns spread over lanes 4g .. 4g + 3."""
+    if (layout.n_elems, tuple(layout.elem_row), tuple(layout.reduce_xors), tuple(layout.lane_names)) != (
+            4, (0, 0, 1, 1), (2, 1), ("_g", "_t")):
+        raise CompileError(f"fragment layout {layout.n_elems}/{layout.elem_row} is not supported")
+    return layout
+
+
+# the statement fields that name fragments (a name, or a tuple of names and other arguments)
+FRAGMENT_FIELDS = ("frag", "pair_frag", "c_frag", "a_frag", "b_frag", "out", "args", "srcs", "frags")

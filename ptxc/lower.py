@@ -14,7 +14,7 @@ from collections import Counter
 from collections.abc import Iterator
 
 from emmy.compiler.ir.expr import BinaryExpr, Literal, Var
-from emmy.compiler.ir.kernel.ir import Smem, TreeHalve
+from emmy.compiler.ir.kernel.ir import FragmentRowReduce, Smem, TreeHalve
 from emmy.compiler.ir.stmt.blocks import Cond, Loop, StridedLoop
 from emmy.compiler.ir.stmt.leaves import Accum, Assign, Let, Load, Select, SelectBranch, Write
 
@@ -319,9 +319,11 @@ class KernelLowering(TensorCores):
             # keys of q @ kt, is unrolled whole, so ptxas can issue one key's scattered column
             # loads while the previous key's softmax update still runs (NVVM unrolls these too).
             # A loop whose inner loops stream rows (SDPA's k) stays rolled: its trips already
-            # load in vectors, and unrolled it measured up to 1.9x slower.
+            # load in vectors, and unrolled it measured up to 1.9x slower. So does attention on
+            # tensor cores, whose trips each hold dozens of fragments: unrolled, they spill.
             if (has_loop and not self._in_loop and n <= _FULL_UNROLL_TRIPS
-                    and n * _expanded_size(body) <= _OUTER_UNROLL_BUDGET and not _streams_rows(var, body)):
+                    and n * _expanded_size(body) <= _OUTER_UNROLL_BUDGET and not _streams_rows(var, body)
+                    and not any(isinstance(node, FragmentRowReduce) for node in _walk(body))):
                 self._unrolled(var, start, step.const, n, body)
                 return
             # A constant start leaves ptxas a constant trip count. Inside another loop it does
@@ -1013,8 +1015,12 @@ def _require_f32_held(dtype, what: str) -> None:
 def _indexes_fragments(var: str, body) -> bool:
     """Whether a loop body indexes a fragment array with the loop variable (`_b[_r0]`)."""
     index = f"[{var}]"
-    return any(isinstance(getattr(node, f, None), str) and index in getattr(node, f)
-               for node in _walk(body) for f in FRAGMENT_FIELDS)
+    for node in _walk(body):
+        for f in FRAGMENT_FIELDS:
+            value = getattr(node, f, None)
+            if any(isinstance(v, str) and index in v for v in (value if isinstance(value, tuple) else (value,))):
+                return True
+    return False
 
 
 def _statements(body) -> Iterator:
