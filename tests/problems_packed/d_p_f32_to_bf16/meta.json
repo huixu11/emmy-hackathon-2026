@@ -1,0 +1,53 @@
+{
+ "id": "d_p_f32_to_bf16",
+ "code": "torch.randn(4096).to(torch.bfloat16)",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "to"
+ ],
+ "kernels": [
+  {
+   "node": "to",
+   "entry": "k_to_pointwise",
+   "arg_order": [
+    "x",
+    "to"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "to",
+     "dtype": "bf16",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

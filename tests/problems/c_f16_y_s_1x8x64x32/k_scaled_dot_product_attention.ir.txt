@@ -1,0 +1,20 @@
+    Tile[a0, a1, a6] (N=16384)
+        for _a2_ks in 0..2
+            acc1__p = load scaled_dot_product_attention__partial[0, _a2_ks, a0, a1, a6]
+            f32 acc1__p__gn = maximum(acc1, acc1__p)
+            f32 acc1__p__dg = subtract(acc1, acc1__p__gn)
+            f32 acc1__p__alpha = exp(acc1__p__dg)
+            f32 acc1__p__dg_o = subtract(acc1__p, acc1__p__gn)
+            f32 acc1__p__beta = exp(acc1__p__dg_o)
+            f32 acc1__p__acc3_sa = multiply(acc1__p__alpha, acc3)
+            acc3__p = load scaled_dot_product_attention__partial[1, _a2_ks, a0, a1, a6]
+            f32 acc1__p__acc3_sb = multiply(acc1__p__beta, acc3__p)
+            f32 acc3 <- add(acc1__p__acc3_sa, acc1__p__acc3_sb)
+            f32 acc1__p__acc5__sum_sa = multiply(acc1__p__alpha, acc5__sum)
+            acc5__sum__p = load scaled_dot_product_attention__partial[2, _a2_ks, a0, a1, a6]
+            f32 acc1__p__acc5__sum_sb = multiply(acc1__p__beta, acc5__sum__p)
+            f32 acc5__sum <- add(acc1__p__acc5__sum_sa, acc1__p__acc5__sum_sb)
+            f32 acc1 <- maximum(acc1, acc1__p)
+        f32 v6 = reciprocal(acc3)
+        f32 acc5 = multiply(acc5__sum, v6)
+        scaled_dot_product_attention[0, a0, a1, a6] = acc5

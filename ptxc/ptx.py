@@ -6,6 +6,7 @@ every value simply gets a fresh register and the counts are declared at the top 
 
 from __future__ import annotations
 
+import re
 import struct
 from collections import Counter
 from dataclasses import dataclass
@@ -16,9 +17,11 @@ PTX_TARGET = "sm_89"
 # register class -> (name prefix, .reg type)
 REG_CLASSES = {
     "pred": ("%p", ".pred"),
+    "b16": ("%h", ".b16"),
     "b32": ("%r", ".b32"),
     "b64": ("%rd", ".b64"),
     "f32": ("%f", ".f32"),
+    "f64": ("%fd", ".f64"),
 }
 
 
@@ -27,8 +30,19 @@ def f32_imm(value: float) -> str:
     return "0f%08X" % struct.unpack("<I", struct.pack("<f", value))[0]
 
 
+def f64_imm(value: float) -> str:
+    """A double-precision immediate spelled as its exact bit pattern: 1.0 -> 0d3FF0000000000000."""
+    return "0d%016X" % struct.unpack("<Q", struct.pack("<d", value))[0]
+
+
 def is_register(operand: str) -> bool:
     return operand.startswith("%")
+
+
+def register_class(reg: str) -> str | None:
+    """The class of a virtual register ("f32" for %f3, "b64" for %rd7), None for anything else."""
+    m = re.fullmatch(r"(%[a-z]+)\d+", reg)
+    return next((cls for cls, (prefix, _) in REG_CLASSES.items() if m and prefix == m.group(1)), None)
 
 
 def address(base: str, offset: int = 0) -> str:
@@ -71,6 +85,7 @@ class PtxBuilder:
         self.lines: list[Instr | Mark | str] = []
         self._reg_counts: Counter[str] = Counter()
         self._label_count = 0
+        self.f64_reads = 0  # f64 values read into f32 registers so far (dtypes._read_f64)
 
     def mark(self) -> Mark:
         mark = Mark()

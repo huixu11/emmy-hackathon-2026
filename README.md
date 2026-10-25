@@ -1,17 +1,76 @@
-> **This submission: `ptxc`, a Kernel IR -> PTX compiler.**
+> **This submission: `ptxc`, a Kernel IR -> PTX compiler.** The organizers' task description
+> follows this box.
 >
 > ```bash
+> git clone https://github.com/huixu11/emmy-hackathon-2026 && cd emmy-hackathon-2026
 > pip install emmy-ml==0.3.11 numpy requests
-> python compile.py problems/p00_scalar_add/k_add_pointwise.ir.json > out.ptx
-> python tools/run_problems.py                        # all 15 open problems: 15/15 pass
-> python tools/run_problems.py --dir tests/problems   # 134 extra variants: 134/134 pass
-> python tools/run_problems.py --iters 100           # median of 100 launches, as DESIGN.md reports
+> python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > r04.ptx   # IR in, PTX out
+>
+> python -m unittest discover -s tests      # offline: all 358 kernels compile, deterministically
+> python tools/run_problems.py               # the 15 open problems on the GPU runner: 15/15
+> python tools/run_problems.py --dir tests/problems   # 308 more, all categories and dtypes: 308/308
+> python tools/run_packed.py                 # 23 bf16 / bool problems (packed, see below): 23/23
+> python tools/run_problems.py --iters 100   # median of 100 launches, as DESIGN.md reports
 > ```
 >
-> Without `--iters`, the times shown are one cold launch each, as `submit.py` times them.
+> The offline tests also assemble every module with `ptxas` when it is on `PATH` or named by
+> `$PTXAS` (`pip install nvidia-cuda-nvcc-cu12` provides one under
+> `site-packages/nvidia/cuda_nvcc/bin/`). Without `--iters`, the times shown are one cold launch.
 >
-> The compiler is `compile.py` plus the `ptxc/` package. [DESIGN.md](DESIGN.md) explains how
-> each IR statement becomes PTX, and why. The task description from the organizers follows.
+> **What to look for**
+>
+> * **All five categories, one lowering.** `compile.py` + `ptxc/`; emmy only loads the IR
+>   (`Graph.from_dict`). One `visit_<Statement>` per IR statement (`ptxc/lower.py`).
+> * **Data types** (`ptxc/dtypes.py`): f32, f16, bf16, f64, i32, i64 and bool, in loads, stores,
+>   arithmetic, reductions and conversions. 16-bit floats round once per op, as torch does;
+>   integer `//` and `%` round toward minus infinity, as torch does (Emmy's own CUDA truncates).
+>   Every open problem also runs with all its inputs in f16, bf16, f64 or i32, and every
+>   attention and reduction problem in f16 and f64 (`c_*`). f64 is computed in f32 by default,
+>   as Emmy's own CUDA computes it: sm_89 GPUs run f64 at 1/64 of the f32 rate, and its
+>   `cvt.rn.f32.f64` too, so in loops three f64 reads in five are rounded to f32 in integer
+>   instructions instead, to the same bits (subnormals, inf and NaN included).
+>   `python compile.py --exact-f64 ...` (or `PTXC_EXACT_F64=1`) computes in f64 instead.
+> * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
+>   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
+>   XOR-swizzled shared memory (B32, B64, B128, B128@k), fragments read from global memory with
+>   row clamping and K zero-fill for odd shapes, fused epilogues (bias, relu) and split-K.
+>   **f16 attention on tensor cores**: q @ k.T and p @ v as mma, the online softmax in between
+>   on the C fragments (row max and sum by `shfl.sync.bfly` across the 4 lanes of a row, the
+>   causal mask as `setp` + `selp` on each element's row and column, `cvt.rn.f16x2.f32` to turn
+>   the f32 scores into the next mma's A operand).
+> * **Copy engine:** `cp.async` (`.cg` 16 B and `.ca` 4/8 B), commit and wait groups, multi-stage
+>   rings, shared pools over 48 KB. TMA and `wgmma` are not implemented: TMA needs a tensor map
+>   built on the host, which the runner cannot pass, and `wgmma` needs sm_90a (the runner is an
+>   RTX 5090, sm_120). An IR that uses them stops the compiler with a message.
+> * **Optimizations**, each measured (DESIGN.md): trip-count unrolling, vector loads and stores,
+>   division by constants without a divide, `.maxntid`, next-key prefetch and one fma per update
+>   in attention, accumulators that always hold equal values computed once, scalar constants as
+>   immediates, `pow` specialized to its exponent, a common-subexpression pass for what
+>   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), and f64 reads split between the f64
+>   unit and the integer ALUs.
+> * **Exact f32 math**: explicit `.rn` rounding, so pointwise results match numpy bit for bit; our
+>   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
+> * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.
+>
+> **Results.** 15/15 open problems, 308/308 in `tests/problems`, 23/23 in `tests/problems_packed`.
+> Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
+> problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
+> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.79x on the attention and reduction
+> problems in f16 and f64 (f64 attention 0.60x). None of the 312 problems with a reference time is
+> more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
+>
+> **Tests and examples**
+>
+> | where | what |
+> |---|---|
+> | `tests/test_compiler.py` | offline unit tests (`python -m unittest discover -s tests`) |
+> | `tests/problems/` | 308 problems from `tests/expressions_variants.py` and `tests/expressions_cross.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), and the open problems in f16, f64 and i32 and the attention and reduction problems in f16 and f64 (`c_*`) |
+> | `tests/problems_packed/` | bf16 and bool problems, the open problems in bf16 among them: the runner cannot allocate those buffers, so `tools/run_packed.py` passes them as int32 words |
+> | `examples/compiled/` | seven kernels' IR next to our PTX, with notes on what to look for |
+> | `tools/pow_sweep.py` | `pow` on 27 exponents and the special values, against C's `pow` |
+>
+> [DESIGN.md](DESIGN.md) explains how each IR statement becomes PTX, and why; [TIMINGS.md](TIMINGS.md)
+> has every problem's time against the reference.
 
 # Emmy Hackathon — write a PTX compiler for Kernel IR
 

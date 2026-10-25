@@ -4,14 +4,20 @@
 
 ```bash
 python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > out.ptx
+python compile.py --exact-f64 path/to/kernel.ir.json > out.ptx   # f64 in f64 (default: in f32)
 python tools/run_problems.py                     # the 15 open problems on the GPU runner
-python tools/run_problems.py --dir tests/problems   # 134 extra hidden-set-style problems
+python tools/run_problems.py --dir tests/problems   # 308 extra hidden-set-style problems
+python tools/run_packed.py                       # 23 with bf16 or bool buffers
+python -m unittest discover -s tests             # offline: every kernel compiles
 ```
 
-Results on the runner (RTX 5090): **15/15 open problems**, all five categories, and
-**134/134** of the extra problems in `tests/problems`. Pointwise outputs match numpy bit for bit.
-Kernel speed is on par with Emmy's own CUDA path or better: a geometric mean of 0.84x its time
-over the 147 problems that have a reference time (see [Performance](#performance)).
+Results on the runner (RTX 5090): **15/15 open problems**, all five categories, **308/308** of
+the extra problems in `tests/problems` and **23/23** in `tests/problems_packed`. Beyond f32,
+the compiler handles f16, bf16, f64, i32, i64 and bool values ([Data types](#data-types-dtypespy)),
+and f16 / bf16 matmuls and f16 attention on tensor cores ([Tensor cores](#tensor-cores-tensorcorepy)). Pointwise
+f32 outputs match numpy bit for bit. Kernel speed is on par with Emmy's own CUDA path or
+better: a geometric mean of 0.84x its time over the 147 f32 problems that have a reference
+time (see [Performance](#performance)).
 
 The translation is ours end to end. Emmy is used only to deserialize the IR (`Graph.from_dict`);
 nothing goes through Emmy's renderer, `nvcc`, or another compiler.
@@ -23,6 +29,7 @@ kernel.py   load      IR json -> typed KernelOp body; buffers (shape, dtype); me
 lower.py    plan      lay out every shared array (static symbols, or one dynamic pool > 48 KiB)
             prologue  ld.param + cvta.to.global for each parameter, in meta.json's arg_order
             walk      one visit_<Statement> per IR statement, emitting PTX as it goes
+cse.py                drop recomputed rcp.rn / div.rn / sqrt.rn, which ptxas keeps
 vectorize.py          merge runs of scalar loads into .v2/.v4 loads where alignment is proven
 ptx.py      render    .version/.target, shared declarations, .entry signature, .reg counts, body
 ```
@@ -34,7 +41,10 @@ ptx.py      render    .version/.target, shared declarations, .entry signature, .
 | `index.py` | Compile integer index expressions, predicates and addresses. |
 | `facts.py` | Track a known range and divisor for every index register. |
 | `fmath.py` | Emit f32 elementwise ops, from `add.rn` up to `tanh`, `erf`, `log` and `pow`. |
+| `dtypes.py` | How each dtype is held, loaded, stored and converted; f64 and integer ops. |
+| `tensorcore.py` | Register fragments, `ldmatrix`, `mma.sync`, fragment stores, shared-memory swizzles. |
 | `scope.py` | Track IR-name scopes, the cache of computed values, and where values can be hoisted to. |
+| `cse.py` | Drop recomputed divisions, reciprocals and square roots after lowering. |
 | `vectorize.py` | Merge scalar loads into vector loads after lowering. |
 | `ptx.py` | Hand out virtual registers and labels, keep instructions structured, lay out the module. |
 
@@ -59,7 +69,8 @@ An IR name maps to one of two things:
 
 * an **integer** (axis coordinate, loop counter, integer `Let`): a `Lin(reg, const)`, the value
   `reg + const`, where `reg` is a `.b32` register or `None` for a compile-time constant;
-* an **f32** value: its PTX operand, a register (`%f3`) or an immediate (`0f3F800000` for 1.0).
+* a **data** value: its PTX operand, a register (`%f3`) or an immediate (`0f3F800000` for 1.0),
+  and its dtype (f32 unless the IR says otherwise; see [Data types](#data-types-dtypespy)).
 
 Registers are virtual and never reused: every result gets a fresh one and ptxas does the real
 allocation. That keeps the code generator free of liveness analysis.
@@ -179,6 +190,13 @@ three more rules come from measuring them in both layouts the IR uses:
   the 24 attention kernels this changes, time fell to 0.36x to 0.97x (`a01`: 76.4 -> 43.7 us
   against the reference's 74.4; `y_s_1x2x48x64`: 43.7 -> 19.1 us against 25.2).
 
+**A module must fit the runner**, which takes at most 2,000,000 characters of PTX. Unrolled
+whole, an f64 attention that emmy schedules as three passes over 32 keys of 64-element dot
+products (`c_f64_y_a_64x64x32x64`, with each f64 `exp` taken in f32) came to 2.3 million. So
+`compile_file` compiles a module again with the unrolling budgets halved, then quartered,
+then off (only the loops the IR marks, or that index fragments), until it fits: 2.3 million
+characters at the full budgets, 105,000 at half.
+
 Real loops are bottom-tested: one entry test (folded away when the bounds prove it), then
 one compare and branch per iteration. The trips always run in order, so every accumulator
 folds exactly as the IR says.
@@ -212,7 +230,9 @@ itself when the IR names none) becomes one `fma.rn.f32`. That is what nvcc makes
 reference's `acc += a * b`, and of online softmax's `acc * alpha + v * beta`; the second
 shortens the chain that carries each key's update to the next (`v_a_rect`: 62.1 -> 41.6 us;
 over the 38 kernels it changes, 0.975x the time, though `a01` went 43.7 -> 45.8 us as
-ptxas scheduled the shorter code differently).
+ptxas scheduled the shorter code differently). An f64 value held in f32 counts as f32 here,
+as Emmy's CUDA multiplies its `float` locals: the f64 dot products had been separate `FMUL`
+and `FADD`, against the reference's `FFMA` (0.99x the time over the 37 f64 kernels it changes).
 A product by 1.0 (softmax's `one * beta`) is an exact add. Pointwise code keeps separately
 rounded `mul.rn` and `add.rn`, as numpy rounds them.
 
@@ -248,6 +268,19 @@ later load up is safe because nothing in between may write that memory (a store,
 `cp.async`, a barrier, a branch or a label ends the region) or touch its destination register.
 m01 goes from 256 scalar shared loads to 96 vector ones, the same count as NVVM's code for the
 reference.
+
+Before that, `cse.py` removes recomputations. Emmy repeats pure scalar work per output tile:
+f16 attention takes each row's `reciprocal` of the softmax sum once per 16x8 tile it stores, 8
+times per row. ptxas merges repeated arithmetic itself, but not `rcp.rn`, `div.rn` or
+`sqrt.rn`, whose slow path it calls as a subroutine: each copy stays, with its `CALL`. The pass
+makes a repeat of those read the first result instead, when both are unguarded and in one
+basic block, no instruction between them writes a source or reads the repeat's result, and no
+other instruction writes either result register. In `t_s_f16_1x2x64x64` that removes 56 of 64
+reciprocals and their calls: 15.0 -> 13.0 us, the reference's time. The same conditions let it
+drop an f64 round trip of an f32 value: emmy's f64 kernels take `exp` in f32, widen it to the f64
+the IR names, and narrow it again for an f32 accumulator, two conversions ptxas keeps. On the 17 other kernels it
+changes, time is unchanged (0.999x). Merging the cheap ops as well gave ptxas's SASS back
+almost unchanged, and moved `x_a_16` from 4.8 to 6.8 us, so those are left to ptxas.
 
 ## Cross-thread combines
 
@@ -308,6 +341,176 @@ The polynomial coefficients for `tanh` and `erf` were fitted by weighted least s
 minimax relative error. Each was checked in float32 Horner arithmetic before use, and then on
 the GPU over its whole input range against float64.
 
+## Data types (`dtypes.py`)
+
+| dtype | in memory | held in | arithmetic |
+|---|---|---|---|
+| f32 | 4 bytes | an f32 register | `fmath.py` |
+| f16, bf16 | 2 bytes (`ld/st .b16`) | an f32 register, at 16-bit precision | `fmath.py` in f32, then one rounding to the dtype |
+| bool | 1 byte (`ld/st .u8`) | an f32 register, 1.0 or 0.0 | the comparison and logic ops |
+| f64 | 8 bytes | an f32 register (the default, as Emmy's CUDA holds it), or an f64 register with `--exact-f64` | f32; with `--exact-f64`, `add/sub/mul/div.rn.f64`, `sqrt.rn.f64`, min/max, comparisons, and other functions through f32 |
+| i32, i64 | 4, 8 bytes | a `.b32` / `.b64` register | integer instructions |
+
+Every statement converts its operands to its own dtype first, as C converts `acc += x`: an
+`Assign` to its dtype, an `Accum` to the accumulator's, a `Write` to the buffer's, and a
+comparison to the type its operands meet in (any float makes it a float). Emmy's IR is mixed:
+an f16 softmax keeps its running max in f16 and its sum in f32, and an int32 sum accumulates in
+f32 and writes i64.
+
+A 16-bit float always holds a value its dtype can represent, so reading it as f32 costs nothing,
+and an op on it is an f32 op plus one rounding (`cvt.rn.f16.f32` then back; for bf16,
+`cvt.rn.bf16x2.f32` and a mask, since `cvt.f32.bf16` needs sm_90). For add, subtract and
+multiply that is exactly the correctly rounded 16-bit result, which is what torch computes:
+the f32 product of two 16-bit values is exact, and so is the f32 sum unless the exponents are
+too far apart for the smaller operand to matter. Emmy's own CUDA differs here (bf16 locals are
+`float`, f16 ones `__half`), and our results are closer to numpy's (`d_p_f16_fma`: 0 against
+the reference's 7.8e-3 error). Stores round once, in their own conversion.
+
+By default an f64 value is held in an f32 register, as Emmy's own CUDA holds it: it declares
+every f64 local `float`, even in a plain f64 multiply. Loads round to f32 as `cvt.rn.f32.f64`
+does (below), the arithmetic is f32, and stores convert back. sm_89 is Ada, every part of which
+(and the RTX 5090 runner) runs f64 at 1/64 of the f32 rate, and Emmy's IR keeps the sums and
+maxima of its f64 kernels in f32 anyway, so f64 arithmetic buys these kernels no accuracy: on
+the 32 f64 attention problems it took 1.71x the reference's time for the same median error
+(4.2e-7), against 0.60x in f32. `--exact-f64` (or `PTXC_EXACT_F64=1`) computes in f64 what
+the IR declares f64, for a GPU with fast f64 (A100 and H100 run it at half the f32 rate) or a
+kernel that needs it; f64 transcendental functions are evaluated in f32 in either mode.
+
+That leaves the reads as the f64 kernels' bottleneck. Ada and the RTX 5090 run
+`cvt.rn.f32.f64` on the f64 unit too, at the same 1/64 rate, and a kernel converts an element
+each time it loads it (attention once per query row for every key), as often as the reference
+does. So in loops three reads in five are rounded to f32 in integer instructions instead
+(`_read_f64`), to the same bits: the top 24 bits of the significand, rounded to nearest even by
+the 29 below, under the rebiased exponent; inf from 2^128 up, NaN kept; and below 2^-126 one f32
+multiply rounds x * 2^126, held as a normal f32 with the dropped bits as a sticky last bit, to
+f32's subnormals. That is about 20 ALU instructions, about what one `cvt` costs the f64 unit,
+so the two run side by side: the f64 unit converts the other two reads in five, the share that
+balanced them in the kernels measured. Every read in integer instructions made
+`c_f64_x_a_48x80x40` (a single block) slower than `cvt` alone, 980 against 909 us, and made
+long modules longer than the runner takes, which then unrolled less; one read in two slowed
+`c_f64_a01_attention` (969 against 618 us), whose q and k reads alternate, and one in three left
+`c_f64_x_a_48x80x40` at `cvt`'s time. The split goes by emission order, so which read lands on
+which unit shifts with the code around it: `c_f64_a02_attention_128` took 525 or 621 us in two
+versions whose loops differ in nothing else. Outside loops reads stay `cvt`: straight-line code
+holds what it loads at once, and there the integer form cost registers
+(`c_f64_y_a_64x32x16x32`: 48 -> 168 registers and 5 KB of spills, 1.50x the time). A module the
+integer form would take past the runner's limit is compiled with `cvt` alone before it unrolls
+less (8 of the f64 kernels).
+
+The integer form also made ptxas stop hoisting loads out of loops: the key walk of
+`c_f64_a01_attention` reloaded and reconverted the query row for every key, 128 loads a trip
+instead of 64, and took 1.25x the time of `cvt` alone. So a prefetching loop (under Loops) now
+loads an f64 read whose address does not change with the key once, before the loop, for all its
+trips (up to 64 values): a01 then took 0.84x, `c_f64_w_a_512x64` 0.58x instead of 1.18x. Over
+the 46 f64 kernels the reads change, the time is 0.84x that of `cvt` alone (`c_f64_m01_matmul_512`:
+321 -> 136 us, `c_f64_x_a_48x80x40`: 909 -> 601 us); the one slower, by 5%, is
+`c_f64_x_r_big_unpinned`, a single block summing a million values, each read once.
+
+The offline tests run the emitted instructions over 600,000 values in numpy against numpy's own
+conversion; on the GPU the integer form gave `cvt.rn.f32.f64`'s bits for 16,384 values, 7,500 of
+them below f32's normal range (the runner's JSON carries no inf or NaN inputs).
+
+Integer `//` and `%` round toward minus infinity, as torch does; PTX's
+`div` and `rem` truncate, so a sign fix follows (by a power of two, `//` is `shr.s32` and `%` an
+`and`). Emmy's CUDA uses C's truncating `/` and `%`, and fails `d_p_i32_floordiv` and
+`d_p_i32_mod`; it also fails to compile the f16 layer norm.
+
+Cross-thread combines move a state in its own dtype. Emmy's IR is mixed here too: an f64
+softmax folds its running max in f64 while its `WarpShuffle` and `TreeHalve` say f32 and its
+shared array is `float` (its CUDA reads the f64 input into a `float`). With `--exact-f64` the
+max stays f64 in registers; `shfl.sync` moves 32 bits, so an f64 or i64 state crosses lanes in two halves
+(`mov.b64 {lo, hi}`, two shuffles, `mov.b64` back), and the tree reads and writes the shared
+array in the array's dtype, converting to the state's. A write to a register of another class
+than the statement's dtype stops the compiler with a message.
+
+The runner allocates f16, f32, f64, i32 and i64 buffers, not bf16 or bool. `tools/run_packed.py`
+runs those problems anyway, passing each such buffer as int32 words holding the same bytes.
+
+The 15 open problems were also generated with every input in f16, bf16, f64 and i32
+(`tests/expressions_cross.py`, problems `c_*`; i32 where torch has an integer form). That found
+three kernels that produced PTX ptxas rejects, all fixed: the two shuffle cases above, and the
+key prefetch of attention (under Loops), which loaded f32 whatever the buffer's dtype. Emmy
+cannot schedule bf16 attention, and it accumulates f64 matmuls in f32, as its CUDA does, so
+those two are checked at f32 accuracy.
+
+The 49 attention and reduction problems of `tests/expressions_variants.py` were then
+generated in f16 and f64 too (98 more `c_*`). They found four more gaps, all fixed:
+
+* An f64 running max that emmy merges with an f32 `Accum` (an f64 attention's split rows):
+  the fold wrote f32 into the f64 register. An `Accum` whose accumulator is held in another
+  dtype now folds in the statement's dtype and stores the result back converted.
+* f64 attention unrolled past the runner's limit on a module (under Loops).
+* f16 attention with split K on tensor cores stores its partial products with an atomic
+  `RegStore`, which was not implemented (under Tensor cores).
+* `tools/generate.py` listed those split-K kernels in the cuda stage's order, the kernel that
+  reads the partial sums first; it now orders the kernels producers first.
+
+The f64 gaps are in what is now the `--exact-f64` mode; the offline tests assemble every f64
+kernel in both modes. An f64 max goes through emmy's `float` shared array in the tree combine, so its result is
+rounded to f32 (the reference's too, which keeps it all in `float`); those three are checked at
+f32 accuracy.
+
+## Tensor cores (`tensorcore.py`)
+
+emmy schedules f16 and bf16 matmuls on `mma.sync.aligned.m16n8k16.row.col.f32`: a 16x16 A tile
+times a 16x8 B tile into a 16x8 f32 C tile, spread over a warp as register fragments (per lane,
+A is 4 `.b32` registers of packed 16-bit pairs, B is 2, C is 4 f32). Lane l holds C's rows g and
+g + 8, columns 2t and 2t + 1, where g = l / 4 and t = l % 4.
+
+| IR | PTX |
+|---|---|
+| `RegFragment` | that many registers per fragment, per array entry; C starts at 0.0 |
+| `LdmatrixLoad`, staged | `ldmatrix.sync.aligned.m8n8.x4` (A), `.x2.trans` / `.x4.trans` pair (B), `.x2` / `.x4` pair (B stored N x K) |
+| `LdmatrixLoad`, from global | two `ld.global.nc.b16` per register in mma's lane map, packed with `mov.b32 {lo, hi}` |
+| `MmaSyncPtx` | `mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}.{f16,bf16}.f32`, C in place |
+| `RegStore` | per lane, rows g and g + 8: the optional epilogue, a conversion to the buffer's dtype, and a `.v2` store when both values share a guard and the address is aligned; an atomic one (split K, each block adding its partial product) is one guarded `red.global.add` per value |
+| `CpAsyncCopy` with a swizzle | the copy's 16 bytes go to the swizzled place of their first element |
+
+A fragment array is indexed by a loop variable in the IR (`_b[_r0]`), and registers cannot be
+indexed at run time, so a loop that indexes fragments is always unrolled. In `ldmatrix`, each
+lane addresses one 8-element row of one of the 8x8 matrices: for A, row lane % 16 at k offset
+8 * (lane / 16), which gives the four A registers in mma's order.
+
+Shared tiles are **swizzled** against bank conflicts: element e of a 16-bit array lives at
+`e ^ (((e >> s) & m) << 3)`, which permutes 16-byte chunks within a row group (B32: m = 1,
+B64: 3, B128: 7; s = 6 unless the name says `@s`). The same function is applied on the
+`cp.async` fill and on every `ldmatrix` read. When the register part of an index is a multiple
+of 2^(s+3), the XORed bits come from the constant alone and the swizzle folds at compile
+time; otherwise it is `bfe.u32`, `shl.b32`, `xor.b32`.
+
+Small and odd shapes leave a tile in global memory (`staged=False`). Rows past M (A) or
+columns past N (B) then read the operand's last row or column, and K past its end reads 0:
+mma sums over K, so a duplicate there would count, while the clamped rows' results are never
+stored (`RegStore`'s guards). The `RegStore` epilogue is a small function of the element, its
+column in the tile (`__N__`) and names in scope: a bias load and add for `linear`, a relu.
+
+All 9 f16 matmuls in `tests/problems` (64 to 512, 96x80x112, 100x70x50, batched, `linear` with
+bias, relu) and both bf16 ones in `tests/problems_packed` pass, at 1.00x the reference's time.
+
+### Attention on tensor cores
+
+For f16 attention emmy keeps everything in registers between two mmas: S = q @ k.T into C
+fragments, the online softmax on those fragments, then P @ v with P as the A operand. Three
+statements do the softmax part.
+
+| IR | PTX |
+|---|---|
+| `FragmentApply` | one f32 op per element (4 per lane): its arguments are fragments (element e), uniform scalars, per-row pairs (rows g and g + 8 pick one each), or a predicate over the element's absolute row and column, then any fused unary ops. In place (`O *= alpha`) it writes the fragment's own registers; otherwise its results are a new fragment |
+| `FragmentRowReduce` | for each of the lane's two rows, its elements across all the chunk's fragments folded in order, then `shfl.sync.bfly.b32` by 2 and by 1: the 4 lanes that share a row end with the whole row's max (or sum) |
+| `FragmentRepack` | two f32 C fragments (k 0-7 and 8-15) into one 16-bit A fragment, `cvt.rn.f16x2.f32 a, c[1], c[0]` per register: C's lane map and A's line up, so no data moves between lanes |
+
+The causal mask is a `FragmentApply` `where(__frow < __fcol, -1e30, s)`. `__frow` and `__fcol`
+are the tile origin plus the layout's offsets for the lane (g, g + 8; 2t, 2t + 1), so the
+predicate is index arithmetic (`setp.lt.s32`) and the select is `selp.f32`. A key chunk loop
+that holds such fragments is not unrolled whole, unlike the scalar attention loops (Loops):
+each trip keeps dozens of fragments live, and the 256-key kernel unrolled spilled and ran
+1.22x the reference's time, rolled 1.00x.
+
+The 9 f16 attention problems in `tests/problems` (`t_s_*`: 1 to 8 heads, 64 to 256 keys, head
+size 32 and 64, causal, a given scale, the softmax(q @ k.T) @ v pattern written out) all pass,
+at 0.82x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
+is scheduled by emmy on the scalar path instead.
+
 ## Performance
 
 Speed is measured with `tools/run_problems.py --iters 100`, the median of 100 launches after a
@@ -317,26 +520,30 @@ not part of the compiler.
 
 | problem | first version | now | reference |
 |---|---|---|---|
-| m01_matmul_512 | 29.4 us | 15.0 us | 15.1 us |
-| a01_attention | | 41.6 us | 74.4 us |
-| a02_attention_128 | 72.4 us | 29.3 us | 29.4 us |
-| r02_big_sum | 21.2 us | 8.9 us | 10.8 us |
+| m01_matmul_512 | 29.4 us | 15.0 us | 15.6 us |
+| a01_attention | | 41.6 us | 74.3 us |
+| a02_attention_128 | 72.4 us | 29.3 us | 29.3 us |
+| r02_big_sum | 21.2 us | 8.8 us | 10.8 us |
 | f01_rmsnorm | | 3.3 us | 4.8 us |
 | w_f_gelu_mlp | 27.3 us | 10.9 us | 17.0 us |
 | w_a_512x64 | 223.8 us | 170.6 us | 354.9 us |
-| w_a_sdpa | | 21.2 us | 49.8 us |
-| v_a_32x64 | | 13.0 us | 23.2 us |
-| v_a_rect | | 33.4 us | 60.0 us |
+| w_a_sdpa | | 21.1 us | 49.8 us |
+| v_a_32x64 | | 12.9 us | 23.2 us |
+| v_a_rect | | 33.4 us | 60.8 us |
 | x_a_cross | | 27.3 us | 109.2 us |
-| y_a_16x64x512x64 | | 193.2 us | 434.7 us |
-| z_p_pow_frac_big | | 3.1 us | 4.8 us |
+| y_a_16x64x512x64 | | 193.1 us | 434.8 us |
+| z_p_pow_frac_big | | 3.1 us | 4.7 us |
 | geometric mean of time / reference, the first 66 problems | 1.12x | 0.90x | 1.00x |
 | geometric mean of time / reference, all 147 with a reference | | 0.84x | 1.00x |
 
-By category, over all 147: pointwise 0.98x, reductions 0.93x, matmul 0.95x, fused 0.88x,
-attention 0.54x. The "now" and "reference" columns come from one run of both compilers, back
-to back: the runner's speed drifts by about 20% between sessions, so figures from different
-sessions do not compare.
+By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
+attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
+matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x, the open problems in f16,
+f64 and i32 0.91x, attention and reductions in f16 0.88x and 0.91x, in f64 0.60x and 0.92x
+(1.71x and 0.97x with `--exact-f64`). The "now" and "reference"
+columns come from two runs of both compilers, alternating, taking the lower time of each: the
+runner's speed drifts by about 20% between sessions, so figures from different sessions do
+not compare. Every problem's figures are in [TIMINGS.md](TIMINGS.md).
 
 Two problems have no reference time: NVRTC rejects `v_p_log`'s reference source, and the
 reference gets `x_p_fma_5000` (`x * y + z`, checked with zero tolerance) wrong, because nvcc
@@ -360,10 +567,17 @@ What closed the gap, in the order it was found by comparing our SASS with the re
    f32 math). A load fewer on the critical path took `f01_rmsnorm` from 4.8 to 3.3 us.
 9. Accumulators that always hold equal values computed once (under Loops): half the exps
    in most attention kernels (`v_a_rect`: 58.0 -> 33.4 us).
+10. For f64, the fma for f64 held in f32 (under Loops) and f64 reads rounded by the f64 unit
+   and the integer ALUs side by side (under Data types): the four f64 SDPA kernels that were
+   1.04x to 1.09x the reference's time now take 0.68x to 0.80x.
 
-No problem is slower than the reference beyond the noise. Kernels of about 3 us jump by
-0.5 us now and then: `x_p_outer_bcast` and `x_m_bmm_bcast` read 1.18x and 1.16x in this run,
-and 1.00x when run again.
+None of the 312 problems with a reference time is more than 3% slower. With `--exact-f64`,
+30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x) are: their IR computes in f64
+(q @ k's products, a running max and its 64-bit shuffles), which
+the RTX 5090 runs at 1/64 of the f32 rate, while the reference's CUDA declares every f64 value
+`float`, as ptxc does by default. No f32 problem is slower beyond the noise. Kernels of about
+3 us jump by 0.5 us now and then:
+`x_p_outer_bcast` and `x_m_bmm_bcast` once read 1.18x and 1.16x, and 1.01x here.
 
 Attention kernels with few blocks (`v_a_rect` runs 4 blocks of 256 threads) are bound by the
 latency of each key's trip, and ptxas's schedule of that trip moves their time by tens of
@@ -378,8 +592,9 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 
 * `tools/run_problems.py` runs `submit.py`'s exact check (compile with `compile.py`, assemble,
   run under meta.json's launch, compare with `expected.npz`) over many problems.
-* `tests/problems/` holds 134 problems generated by `tools/generate.py` from
-  `tests/expressions_variants.py`: new shapes and ops in all five categories. They include odd
+* `tests/problems/` holds 308 problems generated by `tools/generate.py` from
+  `tests/expressions_variants.py` and `tests/expressions_cross.py`: new shapes and ops in all
+  five categories. They include odd
   sizes, 3-D and outer broadcasts, every renderable elementwise op (`sin`/`cos` included),
   composite activations (mish, elu, hardswish), unpinned (multi-block, atomic), column,
   middle-axis and 2^20-element reductions, a scan (`cumsum`), batched, skinny, split-K,
@@ -393,6 +608,18 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 * The fourth batch (`y_*`) holds the attention shapes the two loop rules above were worked out
   on: both layouts, 16 to 512 keys, 32 to 512 threads per block. Among them was a 256-key SDPA
   that ran 1.7x slower than the reference before the row-streaming rule.
+* The sixth batch (`d_*`) covers the other data types: f16, f64, i32 and i64 pointwise ops,
+  conversions, reductions, an f16 softmax and layer norm. bf16 and bool problems are in
+  `tests/problems_packed` (`tests/expressions_packed.py`). The seventh batch (`t_m_*`) holds the
+  tensor-core matmuls, the eighth (`t_s_*`) f16 attention on tensor cores. The ninth (`c_*`,
+  `tests/expressions_cross.py`) is the 15 open problems with every input in f16, bf16, f64 or
+  i32, and the 49 attention and reduction problems in f16 and f64; it found the gaps
+  listed under Data types.
+* `tests/test_compiler.py` runs offline (`python -m unittest discover -s tests`): every kernel of
+  every problem compiles to its meta.json launch contract, gives the same PTX on every run
+  (nothing may depend on Python's string hashing), and assembles with `ptxas` when one is found;
+  bad input stops the compiler with a message; `cse.py` merges a repeat and keeps one whose
+  source changed or that follows a label.
 * The fifth batch (`z_*`) takes powers by constants: `x ** 2`, `** -2`, `** -0.5`, `** 0.5`,
   `** 2.2` and `** 3` (the last three on 2^18 elements), the mean of `x ** 1.5`, and RMS and
   L2 norms written with `x.pow(2)`. `tools/pow_sweep.py` runs 27 exponents on the GPU, with
@@ -401,8 +628,13 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 
 ## Limits
 
-* f32 values and buffers only, which is what every problem uses. Other dtypes stop with a
-  clear error.
-* The statements marked `*` in TASK.md (tensor-core fragments, TMA, mbarriers, carried
-  state) are not implemented; no problem uses them. An unknown statement or op stops the
-  compiler with a message on stderr and a nonzero exit, and never produces wrong PTX silently.
+* Of the statements marked `*` in TASK.md, the `mma.sync` tensor-core ones are implemented
+  (above, for the m16n8k16 layout); `Select` too. TMA (`TmaLoad`, mbarriers) needs a tensor map
+  built on the host, which the runner cannot pass; `wgmma` needs sm_90a, and the runner is an
+  RTX 5090 (sm_120); carried state (`Pre`/`Carry`), a `FragmentApply` argument read from
+  global memory per element (an attention bias, which emmy did not emit for any problem here),
+  block-scaled fp4 and byte-slab loads are not implemented either.
+* f8 and other narrow dtypes are not supported; f64 is computed in f32 unless `--exact-f64`
+  is given, and f64 transcendental functions are computed in f32 either way (above).
+* An unknown statement, op or dtype stops the compiler with a message on stderr and a nonzero
+  exit, and never produces wrong PTX silently.

@@ -1,0 +1,87 @@
+{
+ "id": "c_f64_f01_rmsnorm",
+ "code": "x = torch.randn(64, 1024, dtype=torch.float64); w = torch.randn(1024, dtype=torch.float64); x / torch.sqrt((x * x).mean(-1, keepdim=True) + 1e-5) * w",
+ "rtol": 1e-06,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x",
+  "w"
+ ],
+ "graph_outputs": [
+  "mul_1"
+ ],
+ "kernels": [
+  {
+   "node": "mul_1",
+   "entry": "k_mean_cf0fd5",
+   "arg_order": [
+    "mean_count",
+    "add_c1",
+    "x",
+    "w",
+    "mul_1"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "mean_count",
+     "dtype": "f64",
+     "shape": [
+      1
+     ],
+     "data": [
+      1024.0
+     ]
+    },
+    {
+     "name": "add_c1",
+     "dtype": "f64",
+     "shape": [
+      1
+     ],
+     "data": [
+      1e-05
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f64",
+     "shape": [
+      64,
+      1024
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f64",
+     "shape": [
+      1024
+     ],
+     "seed": 1
+    },
+    {
+     "name": "mul_1",
+     "dtype": "f64",
+     "shape": [
+      64,
+      1024
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

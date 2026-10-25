@@ -1,0 +1,46 @@
+    Tile[a0, a1, a6, a2_co] (N=196608)
+        in0 = load scaled_dot_product_attention_scale[0]
+        for a2 in 0..48:2
+            for a3 in 0..64
+                in2 = load q[0, a0, a1, a3]
+                in1 = load k[0, a0, a2, a3]
+                f64 v0 = multiply(in1, in2)
+                f32 acc0 <- add(acc0, v0)
+            f64 v1 = multiply(acc0, in0)
+            f64 acc1 <- maximum(acc1, v1)
+            for a3 in 0..64
+                in2__r1 = load q[0, a0, a1, a3]
+                in1__r1 = load k[0, a0, (a2 + 1), a3]
+                f64 v0__r1 = multiply(in1__r1, in2__r1)
+                f32 acc0__r1 <- add(acc0__r1, v0__r1)
+            f64 v1__r1 = multiply(acc0__r1, in0)
+            f64 acc1__r1 <- maximum(acc1__r1, v1__r1)
+        f32 acc1 <- maximum(acc1, acc1__r1)
+        for a2 in a2_co..48:32
+            for a5 in 0..64
+                in4 = load q[0, a0, a1, a5]
+                in3 = load k[0, a0, a2, a5]
+                f64 v2 = multiply(in3, in4)
+                f32 acc2 <- add(acc2, v2)
+            f64 v3 = multiply(acc2, in0)
+            f64 v4 = subtract(v3, acc1)
+            f64 v5 = exp(v4)
+            f32 acc3 <- add(acc3, v5)
+        WarpShuffle(acc3, length=32)
+        f32 v6 = reciprocal(acc3)
+        for a7 in a2_co..48:32
+            for a8 in 0..64
+                in6 = load q[0, a0, a1, a8]
+                in5 = load k[0, a0, a7, a8]
+                f64 v7 = multiply(in5, in6)
+                f32 acc4 <- add(acc4, v7)
+            f64 v8 = multiply(acc4, in0)
+            f64 v9 = subtract(v8, acc1)
+            f64 v10 = exp(v9)
+            f32 v11 = multiply(v10, v6)
+            in7 = load v[0, a0, a7, a6]
+            f64 v12 = multiply(in7, v11)
+            f32 acc5 <- add(acc5, v12)
+        WarpShuffle(acc5, length=32)
+        if ((a2_co == 0)):
+            scaled_dot_product_attention[0, a0, a1, a6] = acc5

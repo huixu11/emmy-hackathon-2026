@@ -1,0 +1,144 @@
+    Tile[_a7_ks, a0, a1_b, a6_b, a1_u, a6_u] (N=2048)
+        in0__ar0 = load scaled_dot_product_attention_scale[0]
+        for a2 in 0..32
+            for a3 in 0..64
+                in2__ar0 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 0), a3]
+                in1__ar0 = load k[(a0 // 2), (a0 % 2), a2, a3]
+                f64 v0__ar0 = multiply(in1__ar0, in2__ar0)
+                f32 acc0__ar0 <- add(acc0__ar0, v0__ar0)
+            f64 v1__ar0 = multiply(acc0__ar0, in0__ar0)
+            f64 acc1__ar0 <- maximum(acc1__ar0, v1__ar0)
+        for a2 in 0..32
+            for a5 in 0..64
+                in4__ar0 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 0), a5]
+                in3__ar0 = load k[(a0 // 2), (a0 % 2), a2, a5]
+                f64 v2__ar0 = multiply(in3__ar0, in4__ar0)
+                f32 acc2__ar0 <- add(acc2__ar0, v2__ar0)
+            f64 v3__ar0 = multiply(acc2__ar0, in0__ar0)
+            f64 v4__ar0 = subtract(v3__ar0, acc1__ar0)
+            f64 v5__ar0 = exp(v4__ar0)
+            f32 acc3__ar0 <- add(acc3__ar0, v5__ar0)
+        f32 v6__ar0 = reciprocal(acc3__ar0)
+        in0__ar1 = load scaled_dot_product_attention_scale[0]
+        for a2 in 0..32
+            for a3 in 0..64
+                in2__ar1 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 1), a3]
+                in1__ar1 = load k[(a0 // 2), (a0 % 2), a2, a3]
+                f64 v0__ar1 = multiply(in1__ar1, in2__ar1)
+                f32 acc0__ar1 <- add(acc0__ar1, v0__ar1)
+            f64 v1__ar1 = multiply(acc0__ar1, in0__ar1)
+            f64 acc1__ar1 <- maximum(acc1__ar1, v1__ar1)
+        for a2 in 0..32
+            for a5 in 0..64
+                in4__ar1 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 1), a5]
+                in3__ar1 = load k[(a0 // 2), (a0 % 2), a2, a5]
+                f64 v2__ar1 = multiply(in3__ar1, in4__ar1)
+                f32 acc2__ar1 <- add(acc2__ar1, v2__ar1)
+            f64 v3__ar1 = multiply(acc2__ar1, in0__ar1)
+            f64 v4__ar1 = subtract(v3__ar1, acc1__ar1)
+            f64 v5__ar1 = exp(v4__ar1)
+            f32 acc3__ar1 <- add(acc3__ar1, v5__ar1)
+        f32 v6__ar1 = reciprocal(acc3__ar1)
+        in0__ar2 = load scaled_dot_product_attention_scale[0]
+        for a2 in 0..32
+            for a3 in 0..64
+                in2__ar2 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 2), a3]
+                in1__ar2 = load k[(a0 // 2), (a0 % 2), a2, a3]
+                f64 v0__ar2 = multiply(in1__ar2, in2__ar2)
+                f32 acc0__ar2 <- add(acc0__ar2, v0__ar2)
+            f64 v1__ar2 = multiply(acc0__ar2, in0__ar2)
+            f64 acc1__ar2 <- maximum(acc1__ar2, v1__ar2)
+        for a2 in 0..32
+            for a5 in 0..64
+                in4__ar2 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 2), a5]
+                in3__ar2 = load k[(a0 // 2), (a0 % 2), a2, a5]
+                f64 v2__ar2 = multiply(in3__ar2, in4__ar2)
+                f32 acc2__ar2 <- add(acc2__ar2, v2__ar2)
+            f64 v3__ar2 = multiply(acc2__ar2, in0__ar2)
+            f64 v4__ar2 = subtract(v3__ar2, acc1__ar2)
+            f64 v5__ar2 = exp(v4__ar2)
+            f32 acc3__ar2 <- add(acc3__ar2, v5__ar2)
+        f32 v6__ar2 = reciprocal(acc3__ar2)
+        in0__ar3 = load scaled_dot_product_attention_scale[0]
+        for a2 in 0..32
+            for a3 in 0..64
+                in2__ar3 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 3), a3]
+                in1__ar3 = load k[(a0 // 2), (a0 % 2), a2, a3]
+                f64 v0__ar3 = multiply(in1__ar3, in2__ar3)
+                f32 acc0__ar3 <- add(acc0__ar3, v0__ar3)
+            f64 v1__ar3 = multiply(acc0__ar3, in0__ar3)
+            f64 acc1__ar3 <- maximum(acc1__ar3, v1__ar3)
+        for a2 in 0..32
+            for a5 in 0..64
+                in4__ar3 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 3), a5]
+                in3__ar3 = load k[(a0 // 2), (a0 % 2), a2, a5]
+                f64 v2__ar3 = multiply(in3__ar3, in4__ar3)
+                f32 acc2__ar3 <- add(acc2__ar3, v2__ar3)
+            f64 v3__ar3 = multiply(acc2__ar3, in0__ar3)
+            f64 v4__ar3 = subtract(v3__ar3, acc1__ar3)
+            f64 v5__ar3 = exp(v4__ar3)
+            f32 acc3__ar3 <- add(acc3__ar3, v5__ar3)
+        f32 v6__ar3 = reciprocal(acc3__ar3)
+        for a7 in 0..16
+            for a8 in 0..64
+                in5__ar0 = load k[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), a8]
+                in6__ar0 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 0), a8]
+                f64 v7__ar0 = multiply(in5__ar0, in6__ar0)
+                f32 acc4__ar0 <- add(acc4__ar0, v7__ar0)
+            f64 v8__ar0 = multiply(acc4__ar0, in0__ar0)
+            f64 v9__ar0 = subtract(v8__ar0, acc1__ar0)
+            f64 v10__ar0 = exp(v9__ar0)
+            f32 v11__ar0 = multiply(v10__ar0, v6__ar0)
+            for a8 in 0..64
+                in5__ar1 = load k[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), a8]
+                in6__ar1 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 1), a8]
+                f64 v7__ar1 = multiply(in5__ar1, in6__ar1)
+                f32 acc4__ar1 <- add(acc4__ar1, v7__ar1)
+            f64 v8__ar1 = multiply(acc4__ar1, in0__ar1)
+            f64 v9__ar1 = subtract(v8__ar1, acc1__ar1)
+            f64 v10__ar1 = exp(v9__ar1)
+            f32 v11__ar1 = multiply(v10__ar1, v6__ar1)
+            for a8 in 0..64
+                in5__ar2 = load k[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), a8]
+                in6__ar2 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 2), a8]
+                f64 v7__ar2 = multiply(in5__ar2, in6__ar2)
+                f32 acc4__ar2 <- add(acc4__ar2, v7__ar2)
+            f64 v8__ar2 = multiply(acc4__ar2, in0__ar2)
+            f64 v9__ar2 = subtract(v8__ar2, acc1__ar2)
+            f64 v10__ar2 = exp(v9__ar2)
+            f32 v11__ar2 = multiply(v10__ar2, v6__ar2)
+            for a8 in 0..64
+                in5__ar3 = load k[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), a8]
+                in6__ar3 = load q[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 3), a8]
+                f64 v7__ar3 = multiply(in5__ar3, in6__ar3)
+                f32 acc4__ar3 <- add(acc4__ar3, v7__ar3)
+            f64 v8__ar3 = multiply(acc4__ar3, in0__ar3)
+            f64 v9__ar3 = subtract(v8__ar3, acc1__ar3)
+            f64 v10__ar3 = exp(v9__ar3)
+            f32 v11__ar3 = multiply(v10__ar3, v6__ar3)
+            in7__bc0 = load v[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), (((a6_b * 2) + (a6_u * 2)) + 0)]
+            f64 v12__c0_0 = multiply(in7__bc0, v11__ar0)
+            f32 acc5__c0_0 <- add(acc5__c0_0, v12__c0_0)
+            in7__bc1 = load v[(a0 // 2), (a0 % 2), ((_a7_ks * 16) + a7), (((a6_b * 2) + (a6_u * 2)) + 1)]
+            f64 v12__c0_1 = multiply(in7__bc1, v11__ar0)
+            f32 acc5__c0_1 <- add(acc5__c0_1, v12__c0_1)
+            f64 v12__c1_0 = multiply(in7__bc0, v11__ar1)
+            f32 acc5__c1_0 <- add(acc5__c1_0, v12__c1_0)
+            f64 v12__c1_1 = multiply(in7__bc1, v11__ar1)
+            f32 acc5__c1_1 <- add(acc5__c1_1, v12__c1_1)
+            f64 v12__c2_0 = multiply(in7__bc0, v11__ar2)
+            f32 acc5__c2_0 <- add(acc5__c2_0, v12__c2_0)
+            f64 v12__c2_1 = multiply(in7__bc1, v11__ar2)
+            f32 acc5__c2_1 <- add(acc5__c2_1, v12__c2_1)
+            f64 v12__c3_0 = multiply(in7__bc0, v11__ar3)
+            f32 acc5__c3_0 <- add(acc5__c3_0, v12__c3_0)
+            f64 v12__c3_1 = multiply(in7__bc1, v11__ar3)
+            f32 acc5__c3_1 <- add(acc5__c3_1, v12__c3_1)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 0), (((a6_b * 2) + (a6_u * 2)) + 0)] += acc5__c0_0  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 0), (((a6_b * 2) + (a6_u * 2)) + 1)] += acc5__c0_1  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 1), (((a6_b * 2) + (a6_u * 2)) + 0)] += acc5__c1_0  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 1), (((a6_b * 2) + (a6_u * 2)) + 1)] += acc5__c1_1  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 2), (((a6_b * 2) + (a6_u * 2)) + 0)] += acc5__c2_0  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 2), (((a6_b * 2) + (a6_u * 2)) + 1)] += acc5__c2_1  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 3), (((a6_b * 2) + (a6_u * 2)) + 0)] += acc5__c3_0  (atomic)
+        scaled_dot_product_attention[(a0 // 2), (a0 % 2), (((a1_b * 4) + (a1_u * 4)) + 3), (((a6_b * 2) + (a6_u * 2)) + 1)] += acc5__c3_1  (atomic)

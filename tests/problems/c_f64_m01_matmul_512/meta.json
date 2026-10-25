@@ -1,0 +1,68 @@
+{
+ "id": "c_f64_m01_matmul_512",
+ "code": "torch.randn(512, 512, dtype=torch.float64) @ torch.randn(512, 512, dtype=torch.float64)",
+ "rtol": 0.0001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    96,
+    1,
+    1
+   ],
+   "block": [
+    1024,
+    1,
+    1
+   ],
+   "smem_bytes": 81920,
+   "zero_outputs": [
+    "matmul"
+   ],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "f64",
+     "shape": [
+      512,
+      512
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "f64",
+     "shape": [
+      512,
+      512
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "f64",
+     "shape": [
+      512,
+      512
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

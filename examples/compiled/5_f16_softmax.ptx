@@ -1,0 +1,398 @@
+.version 8.0
+.target sm_89
+.address_size 64
+
+.shared .align 4 .b8 sh_acc0_smem[16];
+.shared .align 4 .b8 sh_acc1_smem[16];
+
+.visible .entry k_softmax_617e93(
+	.param .u64 param_x,
+	.param .u64 param_softmax
+)
+.maxntid 128, 1, 1
+{
+	.reg .b64	%rd<7>;
+	.reg .b32	%r<15>;
+	.reg .f32	%f<222>;
+	.reg .b16	%h<14>;
+	.reg .pred	%p<3>;
+
+	ld.param.u64	%rd0, [param_x];
+	cvta.to.global.u64	%rd1, %rd0;
+	ld.param.u64	%rd2, [param_softmax];
+	cvta.to.global.u64	%rd3, %rd2;
+	// Tile[a0, a1_co] (N=8192)
+	mov.u32	%r0, %tid.x;
+	mov.u32	%r1, %ctaid.x;
+	mov.u32	%r2, %ntid.x;
+	mad.lo.s32	%r3, %r1, %r2, %r0;
+	shr.u32	%r4, %r3, 7;
+	and.b32	%r5, %r3, 127;
+	and.b32	%r6, %r0, 31;
+	shr.u32	%r7, %r0, 5;
+	// for a1 in a1_co..256:128
+	mov.f32	%f0, 0f00000000;
+	mov.f32	%f1, 0fFF800000;
+	// a1: trip 0 of 2
+	mul.lo.s32	%r8, %r4, 256;
+	add.s32	%r9, %r5, %r8;
+	mul.wide.s32	%rd4, %r9, 2;
+	add.s64	%rd5, %rd1, %rd4;
+	// f32 one = 1.0
+	// in0 = load x[a0, a1]
+	ld.global.nc.b16	%h0, [%rd5];
+	cvt.f32.f16	%f2, %h0;
+	// f32 in0__gn = maximum(acc0, in0)
+	max.f32	%f3, %f1, %f2;
+	// f32 in0__dg = subtract(acc0, in0__gn)
+	sub.rn.f32	%f4, %f1, %f3;
+	// f32 in0__alpha = exp(in0__dg)
+	max.NaN.f32	%f6, %f4, 0fC2D00000;
+	min.NaN.f32	%f6, %f6, 0f42B20000;
+	mul.rn.f32	%f7, %f6, 0f3FB8AA3B;
+	neg.f32	%f8, %f7;
+	fma.rn.f32	%f9, %f6, 0f3FB8AA3B, %f8;
+	fma.rn.f32	%f9, %f6, 0f32A57060, %f9;
+	ex2.approx.ftz.f32	%f10, %f7;
+	mul.rn.f32	%f11, %f9, 0f3F317218;
+	fma.rn.f32	%f5, %f10, %f11, %f10;
+	// f32 in0__dg_o = subtract(in0, in0__gn)
+	sub.rn.f32	%f12, %f2, %f3;
+	// f32 in0__beta = exp(in0__dg_o)
+	max.NaN.f32	%f14, %f12, 0fC2D00000;
+	min.NaN.f32	%f14, %f14, 0f42B20000;
+	mul.rn.f32	%f15, %f14, 0f3FB8AA3B;
+	neg.f32	%f16, %f15;
+	fma.rn.f32	%f17, %f14, 0f3FB8AA3B, %f16;
+	fma.rn.f32	%f17, %f14, 0f32A57060, %f17;
+	ex2.approx.ftz.f32	%f18, %f15;
+	mul.rn.f32	%f19, %f17, 0f3F317218;
+	fma.rn.f32	%f13, %f18, %f19, %f18;
+	// f32 in0__acc1_sa = multiply(acc1, in0__alpha)
+	mul.rn.f32	%f20, %f0, %f5;
+	// f32 in0__acc1_sb = multiply(in0__beta, one)
+	// f32 acc1 <- add(in0__acc1_sa, in0__acc1_sb)
+	add.rn.f32	%f0, %f20, %f13;
+	// f16 acc0 <- maximum(acc0, in0)
+	max.f32	%f21, %f1, %f2;
+	cvt.rn.f16.f32	%h1, %f21;
+	cvt.f32.f16	%f22, %h1;
+	mov.f32	%f1, %f22;
+	// a1: trip 1 of 2
+	ld.global.nc.b16	%h2, [%rd5+256];
+	cvt.f32.f16	%f23, %h2;
+	max.f32	%f24, %f1, %f23;
+	sub.rn.f32	%f25, %f1, %f24;
+	max.NaN.f32	%f27, %f25, 0fC2D00000;
+	min.NaN.f32	%f27, %f27, 0f42B20000;
+	mul.rn.f32	%f28, %f27, 0f3FB8AA3B;
+	neg.f32	%f29, %f28;
+	fma.rn.f32	%f30, %f27, 0f3FB8AA3B, %f29;
+	fma.rn.f32	%f30, %f27, 0f32A57060, %f30;
+	ex2.approx.ftz.f32	%f31, %f28;
+	mul.rn.f32	%f32, %f30, 0f3F317218;
+	fma.rn.f32	%f26, %f31, %f32, %f31;
+	sub.rn.f32	%f33, %f23, %f24;
+	max.NaN.f32	%f35, %f33, 0fC2D00000;
+	min.NaN.f32	%f35, %f35, 0f42B20000;
+	mul.rn.f32	%f36, %f35, 0f3FB8AA3B;
+	neg.f32	%f37, %f36;
+	fma.rn.f32	%f38, %f35, 0f3FB8AA3B, %f37;
+	fma.rn.f32	%f38, %f35, 0f32A57060, %f38;
+	ex2.approx.ftz.f32	%f39, %f36;
+	mul.rn.f32	%f40, %f38, 0f3F317218;
+	fma.rn.f32	%f34, %f39, %f40, %f39;
+	mul.rn.f32	%f41, %f0, %f26;
+	add.rn.f32	%f0, %f41, %f34;
+	max.f32	%f42, %f1, %f23;
+	cvt.rn.f16.f32	%h3, %f42;
+	cvt.f32.f16	%f43, %h3;
+	mov.f32	%f1, %f43;
+	// WarpShuffle(acc0, acc1, length=32)
+	activemask.b32	%r10;
+	// butterfly distance 16
+	shfl.sync.bfly.b32	%f44, %f1, 16, 0x1f, %r10;
+	shfl.sync.bfly.b32	%f45, %f0, 16, 0x1f, %r10;
+	max.f32	%f46, %f1, %f44;
+	sub.rn.f32	%f47, %f1, %f46;
+	max.NaN.f32	%f49, %f47, 0fC2D00000;
+	min.NaN.f32	%f49, %f49, 0f42B20000;
+	mul.rn.f32	%f50, %f49, 0f3FB8AA3B;
+	neg.f32	%f51, %f50;
+	fma.rn.f32	%f52, %f49, 0f3FB8AA3B, %f51;
+	fma.rn.f32	%f52, %f49, 0f32A57060, %f52;
+	ex2.approx.ftz.f32	%f53, %f50;
+	mul.rn.f32	%f54, %f52, 0f3F317218;
+	fma.rn.f32	%f48, %f53, %f54, %f53;
+	sub.rn.f32	%f55, %f44, %f46;
+	max.NaN.f32	%f57, %f55, 0fC2D00000;
+	min.NaN.f32	%f57, %f57, 0f42B20000;
+	mul.rn.f32	%f58, %f57, 0f3FB8AA3B;
+	neg.f32	%f59, %f58;
+	fma.rn.f32	%f60, %f57, 0f3FB8AA3B, %f59;
+	fma.rn.f32	%f60, %f57, 0f32A57060, %f60;
+	ex2.approx.ftz.f32	%f61, %f58;
+	mul.rn.f32	%f62, %f60, 0f3F317218;
+	fma.rn.f32	%f56, %f61, %f62, %f61;
+	mul.rn.f32	%f63, %f48, %f0;
+	mul.rn.f32	%f64, %f56, %f45;
+	add.rn.f32	%f0, %f63, %f64;
+	mov.f32	%f1, %f46;
+	// butterfly distance 8
+	shfl.sync.bfly.b32	%f65, %f1, 8, 0x1f, %r10;
+	shfl.sync.bfly.b32	%f66, %f0, 8, 0x1f, %r10;
+	max.f32	%f67, %f1, %f65;
+	sub.rn.f32	%f68, %f1, %f67;
+	max.NaN.f32	%f70, %f68, 0fC2D00000;
+	min.NaN.f32	%f70, %f70, 0f42B20000;
+	mul.rn.f32	%f71, %f70, 0f3FB8AA3B;
+	neg.f32	%f72, %f71;
+	fma.rn.f32	%f73, %f70, 0f3FB8AA3B, %f72;
+	fma.rn.f32	%f73, %f70, 0f32A57060, %f73;
+	ex2.approx.ftz.f32	%f74, %f71;
+	mul.rn.f32	%f75, %f73, 0f3F317218;
+	fma.rn.f32	%f69, %f74, %f75, %f74;
+	sub.rn.f32	%f76, %f65, %f67;
+	max.NaN.f32	%f78, %f76, 0fC2D00000;
+	min.NaN.f32	%f78, %f78, 0f42B20000;
+	mul.rn.f32	%f79, %f78, 0f3FB8AA3B;
+	neg.f32	%f80, %f79;
+	fma.rn.f32	%f81, %f78, 0f3FB8AA3B, %f80;
+	fma.rn.f32	%f81, %f78, 0f32A57060, %f81;
+	ex2.approx.ftz.f32	%f82, %f79;
+	mul.rn.f32	%f83, %f81, 0f3F317218;
+	fma.rn.f32	%f77, %f82, %f83, %f82;
+	mul.rn.f32	%f84, %f69, %f0;
+	mul.rn.f32	%f85, %f77, %f66;
+	add.rn.f32	%f0, %f84, %f85;
+	mov.f32	%f1, %f67;
+	// butterfly distance 4
+	shfl.sync.bfly.b32	%f86, %f1, 4, 0x1f, %r10;
+	shfl.sync.bfly.b32	%f87, %f0, 4, 0x1f, %r10;
+	max.f32	%f88, %f1, %f86;
+	sub.rn.f32	%f89, %f1, %f88;
+	max.NaN.f32	%f91, %f89, 0fC2D00000;
+	min.NaN.f32	%f91, %f91, 0f42B20000;
+	mul.rn.f32	%f92, %f91, 0f3FB8AA3B;
+	neg.f32	%f93, %f92;
+	fma.rn.f32	%f94, %f91, 0f3FB8AA3B, %f93;
+	fma.rn.f32	%f94, %f91, 0f32A57060, %f94;
+	ex2.approx.ftz.f32	%f95, %f92;
+	mul.rn.f32	%f96, %f94, 0f3F317218;
+	fma.rn.f32	%f90, %f95, %f96, %f95;
+	sub.rn.f32	%f97, %f86, %f88;
+	max.NaN.f32	%f99, %f97, 0fC2D00000;
+	min.NaN.f32	%f99, %f99, 0f42B20000;
+	mul.rn.f32	%f100, %f99, 0f3FB8AA3B;
+	neg.f32	%f101, %f100;
+	fma.rn.f32	%f102, %f99, 0f3FB8AA3B, %f101;
+	fma.rn.f32	%f102, %f99, 0f32A57060, %f102;
+	ex2.approx.ftz.f32	%f103, %f100;
+	mul.rn.f32	%f104, %f102, 0f3F317218;
+	fma.rn.f32	%f98, %f103, %f104, %f103;
+	mul.rn.f32	%f105, %f90, %f0;
+	mul.rn.f32	%f106, %f98, %f87;
+	add.rn.f32	%f0, %f105, %f106;
+	mov.f32	%f1, %f88;
+	// butterfly distance 2
+	shfl.sync.bfly.b32	%f107, %f1, 2, 0x1f, %r10;
+	shfl.sync.bfly.b32	%f108, %f0, 2, 0x1f, %r10;
+	max.f32	%f109, %f1, %f107;
+	sub.rn.f32	%f110, %f1, %f109;
+	max.NaN.f32	%f112, %f110, 0fC2D00000;
+	min.NaN.f32	%f112, %f112, 0f42B20000;
+	mul.rn.f32	%f113, %f112, 0f3FB8AA3B;
+	neg.f32	%f114, %f113;
+	fma.rn.f32	%f115, %f112, 0f3FB8AA3B, %f114;
+	fma.rn.f32	%f115, %f112, 0f32A57060, %f115;
+	ex2.approx.ftz.f32	%f116, %f113;
+	mul.rn.f32	%f117, %f115, 0f3F317218;
+	fma.rn.f32	%f111, %f116, %f117, %f116;
+	sub.rn.f32	%f118, %f107, %f109;
+	max.NaN.f32	%f120, %f118, 0fC2D00000;
+	min.NaN.f32	%f120, %f120, 0f42B20000;
+	mul.rn.f32	%f121, %f120, 0f3FB8AA3B;
+	neg.f32	%f122, %f121;
+	fma.rn.f32	%f123, %f120, 0f3FB8AA3B, %f122;
+	fma.rn.f32	%f123, %f120, 0f32A57060, %f123;
+	ex2.approx.ftz.f32	%f124, %f121;
+	mul.rn.f32	%f125, %f123, 0f3F317218;
+	fma.rn.f32	%f119, %f124, %f125, %f124;
+	mul.rn.f32	%f126, %f111, %f0;
+	mul.rn.f32	%f127, %f119, %f108;
+	add.rn.f32	%f0, %f126, %f127;
+	mov.f32	%f1, %f109;
+	// butterfly distance 1
+	shfl.sync.bfly.b32	%f128, %f1, 1, 0x1f, %r10;
+	shfl.sync.bfly.b32	%f129, %f0, 1, 0x1f, %r10;
+	max.f32	%f130, %f1, %f128;
+	sub.rn.f32	%f131, %f1, %f130;
+	max.NaN.f32	%f133, %f131, 0fC2D00000;
+	min.NaN.f32	%f133, %f133, 0f42B20000;
+	mul.rn.f32	%f134, %f133, 0f3FB8AA3B;
+	neg.f32	%f135, %f134;
+	fma.rn.f32	%f136, %f133, 0f3FB8AA3B, %f135;
+	fma.rn.f32	%f136, %f133, 0f32A57060, %f136;
+	ex2.approx.ftz.f32	%f137, %f134;
+	mul.rn.f32	%f138, %f136, 0f3F317218;
+	fma.rn.f32	%f132, %f137, %f138, %f137;
+	sub.rn.f32	%f139, %f128, %f130;
+	max.NaN.f32	%f141, %f139, 0fC2D00000;
+	min.NaN.f32	%f141, %f141, 0f42B20000;
+	mul.rn.f32	%f142, %f141, 0f3FB8AA3B;
+	neg.f32	%f143, %f142;
+	fma.rn.f32	%f144, %f141, 0f3FB8AA3B, %f143;
+	fma.rn.f32	%f144, %f141, 0f32A57060, %f144;
+	ex2.approx.ftz.f32	%f145, %f142;
+	mul.rn.f32	%f146, %f144, 0f3F317218;
+	fma.rn.f32	%f140, %f145, %f146, %f145;
+	mul.rn.f32	%f147, %f132, %f0;
+	mul.rn.f32	%f148, %f140, %f129;
+	add.rn.f32	%f0, %f147, %f148;
+	mov.f32	%f1, %f130;
+	// Smem float acc0_smem[4]
+	// Smem float acc1_smem[4]
+	// if ((lane == 0)):
+	setp.eq.s32	%p0, %r6, 0;
+	mov.u32	%r11, sh_acc0_smem;
+	mad.lo.s32	%r12, %r7, 4, %r11;
+	mov.u32	%r13, sh_acc1_smem;
+	mad.lo.s32	%r14, %r7, 4, %r13;
+	@!%p0 bra	$L1_endif;
+	// acc0_smem[warp] = acc0
+	st.shared.f32	[%r12], %f1;
+	// acc1_smem[warp] = acc1
+	st.shared.f32	[%r14], %f0;
+$L1_endif:
+	// Sync
+	bar.sync	0;
+	// TreeHalve(acc0, acc1, length=4, tid=warp)
+	// tree stride 2
+	setp.lt.s32	%p1, %r7, 2;
+	@!%p1 bra	$L2_tree_skip;
+	ld.shared.f32	%f149, [%r12];
+	ld.shared.f32	%f150, [%r12+8];
+	ld.shared.f32	%f151, [%r14];
+	ld.shared.f32	%f152, [%r14+8];
+	max.f32	%f153, %f149, %f150;
+	sub.rn.f32	%f154, %f149, %f153;
+	max.NaN.f32	%f156, %f154, 0fC2D00000;
+	min.NaN.f32	%f156, %f156, 0f42B20000;
+	mul.rn.f32	%f157, %f156, 0f3FB8AA3B;
+	neg.f32	%f158, %f157;
+	fma.rn.f32	%f159, %f156, 0f3FB8AA3B, %f158;
+	fma.rn.f32	%f159, %f156, 0f32A57060, %f159;
+	ex2.approx.ftz.f32	%f160, %f157;
+	mul.rn.f32	%f161, %f159, 0f3F317218;
+	fma.rn.f32	%f155, %f160, %f161, %f160;
+	sub.rn.f32	%f162, %f150, %f153;
+	max.NaN.f32	%f164, %f162, 0fC2D00000;
+	min.NaN.f32	%f164, %f164, 0f42B20000;
+	mul.rn.f32	%f165, %f164, 0f3FB8AA3B;
+	neg.f32	%f166, %f165;
+	fma.rn.f32	%f167, %f164, 0f3FB8AA3B, %f166;
+	fma.rn.f32	%f167, %f164, 0f32A57060, %f167;
+	ex2.approx.ftz.f32	%f168, %f165;
+	mul.rn.f32	%f169, %f167, 0f3F317218;
+	fma.rn.f32	%f163, %f168, %f169, %f168;
+	mul.rn.f32	%f170, %f155, %f151;
+	mul.rn.f32	%f171, %f163, %f152;
+	add.rn.f32	%f151, %f170, %f171;
+	mov.f32	%f149, %f153;
+	st.shared.f32	[%r12], %f149;
+	st.shared.f32	[%r14], %f151;
+$L2_tree_skip:
+	bar.sync	0;
+	// tree stride 1
+	setp.lt.s32	%p2, %r7, 1;
+	@!%p2 bra	$L3_tree_skip;
+	ld.shared.f32	%f172, [%r12];
+	ld.shared.f32	%f173, [%r12+4];
+	ld.shared.f32	%f174, [%r14];
+	ld.shared.f32	%f175, [%r14+4];
+	max.f32	%f176, %f172, %f173;
+	sub.rn.f32	%f177, %f172, %f176;
+	max.NaN.f32	%f179, %f177, 0fC2D00000;
+	min.NaN.f32	%f179, %f179, 0f42B20000;
+	mul.rn.f32	%f180, %f179, 0f3FB8AA3B;
+	neg.f32	%f181, %f180;
+	fma.rn.f32	%f182, %f179, 0f3FB8AA3B, %f181;
+	fma.rn.f32	%f182, %f179, 0f32A57060, %f182;
+	ex2.approx.ftz.f32	%f183, %f180;
+	mul.rn.f32	%f184, %f182, 0f3F317218;
+	fma.rn.f32	%f178, %f183, %f184, %f183;
+	sub.rn.f32	%f185, %f173, %f176;
+	max.NaN.f32	%f187, %f185, 0fC2D00000;
+	min.NaN.f32	%f187, %f187, 0f42B20000;
+	mul.rn.f32	%f188, %f187, 0f3FB8AA3B;
+	neg.f32	%f189, %f188;
+	fma.rn.f32	%f190, %f187, 0f3FB8AA3B, %f189;
+	fma.rn.f32	%f190, %f187, 0f32A57060, %f190;
+	ex2.approx.ftz.f32	%f191, %f188;
+	mul.rn.f32	%f192, %f190, 0f3F317218;
+	fma.rn.f32	%f186, %f191, %f192, %f191;
+	mul.rn.f32	%f193, %f178, %f174;
+	mul.rn.f32	%f194, %f186, %f175;
+	add.rn.f32	%f174, %f193, %f194;
+	mov.f32	%f172, %f176;
+	st.shared.f32	[%r12], %f172;
+	st.shared.f32	[%r14], %f174;
+$L3_tree_skip:
+	bar.sync	0;
+	ld.shared.f32	%f1, [sh_acc0_smem];
+	ld.shared.f32	%f0, [sh_acc1_smem];
+	// f32 v2 = reciprocal(acc1)
+	rcp.rn.f32	%f195, %f0;
+	// for a3 in a1_co..256:128
+	// a3: trip 0 of 2
+	add.s64	%rd6, %rd3, %rd4;
+	// in2 = load x[a0, a3]
+	ld.global.nc.b16	%h4, [%rd5];
+	cvt.f32.f16	%f196, %h4;
+	// f16 v3 = subtract(in2, acc0)
+	cvt.rn.f16.f32	%h5, %f1;
+	cvt.f32.f16	%f197, %h5;
+	sub.rn.f32	%f198, %f196, %f197;
+	cvt.rn.f16.f32	%h6, %f198;
+	cvt.f32.f16	%f199, %h6;
+	// f16 v4 = exp(v3)
+	max.NaN.f32	%f201, %f199, 0fC2D00000;
+	min.NaN.f32	%f201, %f201, 0f42B20000;
+	mul.rn.f32	%f202, %f201, 0f3FB8AA3B;
+	neg.f32	%f203, %f202;
+	fma.rn.f32	%f204, %f201, 0f3FB8AA3B, %f203;
+	fma.rn.f32	%f204, %f201, 0f32A57060, %f204;
+	ex2.approx.ftz.f32	%f205, %f202;
+	mul.rn.f32	%f206, %f204, 0f3F317218;
+	fma.rn.f32	%f200, %f205, %f206, %f205;
+	cvt.rn.f16.f32	%h7, %f200;
+	cvt.f32.f16	%f207, %h7;
+	// f32 v5 = multiply(v2, v4)
+	mul.rn.f32	%f208, %f195, %f207;
+	// softmax[a0, a3] = v5
+	cvt.rn.f16.f32	%h8, %f208;
+	st.global.b16	[%rd6], %h8;
+	// a3: trip 1 of 2
+	ld.global.nc.b16	%h9, [%rd5+256];
+	cvt.f32.f16	%f209, %h9;
+	cvt.rn.f16.f32	%h10, %f1;
+	cvt.f32.f16	%f210, %h10;
+	sub.rn.f32	%f211, %f209, %f210;
+	cvt.rn.f16.f32	%h11, %f211;
+	cvt.f32.f16	%f212, %h11;
+	max.NaN.f32	%f214, %f212, 0fC2D00000;
+	min.NaN.f32	%f214, %f214, 0f42B20000;
+	mul.rn.f32	%f215, %f214, 0f3FB8AA3B;
+	neg.f32	%f216, %f215;
+	fma.rn.f32	%f217, %f214, 0f3FB8AA3B, %f216;
+	fma.rn.f32	%f217, %f214, 0f32A57060, %f217;
+	ex2.approx.ftz.f32	%f218, %f215;
+	mul.rn.f32	%f219, %f217, 0f3F317218;
+	fma.rn.f32	%f213, %f218, %f219, %f218;
+	cvt.rn.f16.f32	%h12, %f213;
+	cvt.f32.f16	%f220, %h12;
+	mul.rn.f32	%f221, %f195, %f220;
+	cvt.rn.f16.f32	%h13, %f221;
+	st.global.b16	[%rd6+256], %h13;
+	ret;
+}

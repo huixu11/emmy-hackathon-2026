@@ -1,0 +1,68 @@
+{
+ "id": "c_i32_m01_matmul_512",
+ "code": "torch.randint(-3, 4, (512, 512,), dtype=torch.int32) @ torch.randint(-3, 4, (512, 512,), dtype=torch.int32)",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x0",
+  "x1"
+ ],
+ "graph_outputs": [
+  "matmul"
+ ],
+ "kernels": [
+  {
+   "node": "matmul",
+   "entry": "k_matmul",
+   "arg_order": [
+    "x1",
+    "x0",
+    "matmul"
+   ],
+   "grid": [
+    112,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 55296,
+   "zero_outputs": [
+    "matmul"
+   ],
+   "args": [
+    {
+     "name": "x1",
+     "dtype": "i32",
+     "shape": [
+      512,
+      512
+     ],
+     "seed": 1
+    },
+    {
+     "name": "x0",
+     "dtype": "i32",
+     "shape": [
+      512,
+      512
+     ],
+     "seed": 0
+    },
+    {
+     "name": "matmul",
+     "dtype": "i32",
+     "shape": [
+      512,
+      512
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

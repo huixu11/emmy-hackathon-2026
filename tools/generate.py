@@ -35,6 +35,13 @@ from pathlib import Path
 import numpy as np
 
 
+def bf16(a) -> np.ndarray:
+    """float32 values rounded to the nearest bfloat16 (ties to even), as float32."""
+    bits = np.asarray(a, dtype=np.float32).view(np.uint32).astype(np.uint64)
+    bits = (bits + 0x7FFF + ((bits >> 16) & 1)) & 0xFFFF0000
+    return bits.astype(np.uint32).view(np.float32)
+
+
 def load_specs(path: Path):
     spec = importlib.util.spec_from_file_location("exprs", path)
     mod = importlib.util.module_from_spec(spec)
@@ -52,6 +59,21 @@ def flat(dimspec) -> int:
             raise ValueError(f"symbolic launch dim {f!r} - dynamic shapes not supported here")
         total *= int(f)
     return total
+
+
+def producers_first(kernels: list[dict], cuda_graph: dict) -> list[dict]:
+    """The kernels in an order that runs each after those whose outputs it reads (submit.py
+    runs them in meta.json's order). The cuda stage lists split-K's reduction kernel, which
+    reads the partial sums, ahead of the kernel that adds them up; otherwise its order stays."""
+    writes = {k["node"]: {t["name"] for t in cuda_graph["nodes"][k["node"]]["outputs"]} for k in kernels}
+    ordered, left = [], list(kernels)
+    while left:
+        done = set().union(*(writes[k["node"]] for k in ordered))
+        ready = [k for k in left if all(a["name"] in done for a in k["args"] if a.get("intermediate"))]
+        k = ready[0] if ready else left[0]  # a missing producer: keep the stage's order
+        ordered.append(k)
+        left.remove(k)
+    return ordered
 
 
 def trace(emmy: str, spec: dict, dump: Path, target: str) -> None:
@@ -138,15 +160,18 @@ def package(spec: dict, dump: Path, outdir: Path, hidden: bool = False) -> dict:
                                  intermediate=True))
         k["args"] = args
         k["final"] = bool(outs & graph_outputs)
+    kernels = producers_first(kernels, cuda_graph)
 
     # ---- expected outputs from the seeded inputs -------------------------
     DT = {"f32": np.float32, "f16": np.float16, "f64": np.float64,
-          "i32": np.int32, "i64": np.int64}
+          "i32": np.int32, "i64": np.int64, "bool": np.bool_}
     seeded = {}
     for name in graph["inputs"]:
         t = nodes[name]["outputs"][0]
         rng = np.random.default_rng(graph["inputs"].index(name))
-        seeded[name] = rng.standard_normal([d for d in t["shape"]] or [1]).astype(DT[t["dtype"]])
+        values = rng.standard_normal([d for d in t["shape"]] or [1])
+        # numpy has no bfloat16: such an input is float32 values rounded to bfloat16
+        seeded[name] = bf16(values) if t["dtype"] == "bf16" else values.astype(DT[t["dtype"]])
     refs = spec["ref"](*[seeded[n] for n in graph["inputs"]])
     expected = {out: np.asarray(r) for out, r in zip(graph["outputs"], refs)}
 

@@ -1,0 +1,108 @@
+.version 8.0
+.target sm_89
+.address_size 64
+
+.shared .align 4 .b8 sh_acc0_smem[16];
+
+.visible .entry k_sum_1_reduce(
+	.param .u64 param_x,
+	.param .u64 param_sum_1
+)
+.maxntid 128, 1, 1
+{
+	.reg .b64	%rd<8>;
+	.reg .b32	%r<13>;
+	.reg .f32	%f<14>;
+	.reg .pred	%p<4>;
+
+	ld.param.u64	%rd0, [param_x];
+	cvta.to.global.u64	%rd1, %rd0;
+	ld.param.u64	%rd2, [param_sum_1];
+	cvta.to.global.u64	%rd3, %rd2;
+	// Tile[a0, a1_co] (N=8192)
+	mov.u32	%r0, %tid.x;
+	mov.u32	%r1, %ctaid.x;
+	mov.u32	%r2, %ntid.x;
+	mad.lo.s32	%r3, %r1, %r2, %r0;
+	shr.u32	%r4, %r3, 7;
+	and.b32	%r5, %r3, 127;
+	and.b32	%r6, %r0, 31;
+	shr.u32	%r7, %r0, 5;
+	// for a1 in a1_co..512:128
+	mov.f32	%f0, 0f00000000;
+	// a1: trip 0 of 4
+	mul.lo.s32	%r8, %r4, 512;
+	add.s32	%r9, %r5, %r8;
+	mul.wide.s32	%rd4, %r9, 4;
+	add.s64	%rd5, %rd1, %rd4;
+	// in0 = load x[a0, a1]
+	ld.global.nc.f32	%f1, [%rd5];
+	// f32 acc0 <- add(acc0, in0)
+	add.rn.f32	%f0, %f0, %f1;
+	// a1: trip 1 of 4
+	ld.global.nc.f32	%f2, [%rd5+512];
+	add.rn.f32	%f0, %f0, %f2;
+	// a1: trip 2 of 4
+	ld.global.nc.f32	%f3, [%rd5+1024];
+	add.rn.f32	%f0, %f0, %f3;
+	// a1: trip 3 of 4
+	ld.global.nc.f32	%f4, [%rd5+1536];
+	add.rn.f32	%f0, %f0, %f4;
+	// WarpShuffle(acc0, length=32)
+	activemask.b32	%r10;
+	// butterfly distance 16
+	shfl.sync.bfly.b32	%f5, %f0, 16, 0x1f, %r10;
+	add.rn.f32	%f0, %f0, %f5;
+	// butterfly distance 8
+	shfl.sync.bfly.b32	%f6, %f0, 8, 0x1f, %r10;
+	add.rn.f32	%f0, %f0, %f6;
+	// butterfly distance 4
+	shfl.sync.bfly.b32	%f7, %f0, 4, 0x1f, %r10;
+	add.rn.f32	%f0, %f0, %f7;
+	// butterfly distance 2
+	shfl.sync.bfly.b32	%f8, %f0, 2, 0x1f, %r10;
+	add.rn.f32	%f0, %f0, %f8;
+	// butterfly distance 1
+	shfl.sync.bfly.b32	%f9, %f0, 1, 0x1f, %r10;
+	add.rn.f32	%f0, %f0, %f9;
+	// Smem float acc0_smem[4]
+	// if ((lane == 0)):
+	setp.eq.s32	%p0, %r6, 0;
+	mov.u32	%r11, sh_acc0_smem;
+	mad.lo.s32	%r12, %r7, 4, %r11;
+	@!%p0 bra	$L1_endif;
+	// acc0_smem[warp] = acc0
+	st.shared.f32	[%r12], %f0;
+$L1_endif:
+	// Sync
+	bar.sync	0;
+	// TreeHalve(acc0, length=4, tid=warp)
+	// tree stride 2
+	setp.lt.s32	%p1, %r7, 2;
+	@!%p1 bra	$L2_tree_skip;
+	ld.shared.f32	%f10, [%r12];
+	ld.shared.f32	%f11, [%r12+8];
+	add.rn.f32	%f10, %f10, %f11;
+	st.shared.f32	[%r12], %f10;
+$L2_tree_skip:
+	bar.sync	0;
+	// tree stride 1
+	setp.lt.s32	%p2, %r7, 1;
+	@!%p2 bra	$L3_tree_skip;
+	ld.shared.f32	%f12, [%r12];
+	ld.shared.f32	%f13, [%r12+4];
+	add.rn.f32	%f12, %f12, %f13;
+	st.shared.f32	[%r12], %f12;
+$L3_tree_skip:
+	bar.sync	0;
+	ld.shared.f32	%f0, [sh_acc0_smem];
+	// if ((a1_co == 0)):
+	setp.eq.s32	%p3, %r5, 0;
+	mul.wide.s32	%rd6, %r4, 4;
+	add.s64	%rd7, %rd3, %rd6;
+	@!%p3 bra	$L4_endif;
+	// sum_1[a0] = acc0
+	st.global.f32	[%rd7], %f0;
+$L4_endif:
+	ret;
+}

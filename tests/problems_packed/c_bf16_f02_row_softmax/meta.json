@@ -1,0 +1,55 @@
+{
+ "id": "c_bf16_f02_row_softmax",
+ "code": "torch.softmax(torch.randn(64, 256, dtype=torch.bfloat16), dim=-1)",
+ "rtol": 0.05,
+ "atol": 0.05,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "softmax"
+ ],
+ "kernels": [
+  {
+   "node": "softmax",
+   "entry": "k_softmax_52724c",
+   "arg_order": [
+    "x",
+    "softmax"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "bf16",
+     "shape": [
+      64,
+      256
+     ],
+     "seed": 0
+    },
+    {
+     "name": "softmax",
+     "dtype": "bf16",
+     "shape": [
+      64,
+      256
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

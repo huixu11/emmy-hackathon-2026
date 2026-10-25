@@ -1,0 +1,96 @@
+{
+ "id": "t_s_f16_2x4x128x64",
+ "code": "q = torch.randn(2, 4, 128, 64, dtype=torch.float16); k = torch.randn(2, 4, 128, 64, dtype=torch.float16); v = torch.randn(2, 4, 128, 64, dtype=torch.float16); torch.nn.functional.scaled_dot_product_attention(q, k, v)",
+ "rtol": 0.01,
+ "atol": 0.01,
+ "graph_inputs": [
+  "q",
+  "k",
+  "v"
+ ],
+ "graph_outputs": [
+  "scaled_dot_product_attention"
+ ],
+ "kernels": [
+  {
+   "node": "scaled_dot_product_attention",
+   "entry": "k_sdpa_d0bf28",
+   "arg_order": [
+    "scaled_dot_product_attention_scale",
+    "q",
+    "k",
+    "v",
+    "scaled_dot_product_attention"
+   ],
+   "grid": [
+    16,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "scaled_dot_product_attention_scale",
+     "dtype": "f16",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.125
+     ]
+    },
+    {
+     "name": "q",
+     "dtype": "f16",
+     "shape": [
+      2,
+      4,
+      128,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "k",
+     "dtype": "f16",
+     "shape": [
+      2,
+      4,
+      128,
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "v",
+     "dtype": "f16",
+     "shape": [
+      2,
+      4,
+      128,
+      64
+     ],
+     "seed": 2
+    },
+    {
+     "name": "scaled_dot_product_attention",
+     "dtype": "f16",
+     "shape": [
+      2,
+      4,
+      128,
+      64
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}
