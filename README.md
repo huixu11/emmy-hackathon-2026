@@ -63,7 +63,7 @@
 > * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
 >   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
 >   XOR-swizzled shared memory (B32, B64, B128, B128@k), fragments read from global memory with
->   row clamping and K zero-fill for odd shapes, fused epilogues (bias, relu) and split-K.
+>   row clamping and K zero-fill for odd shapes (as 32-bit words where aligned), fused epilogues (bias, relu) and split-K.
 >   **f16 attention on tensor cores**: q @ k.T and p @ v as mma, the online softmax in between
 >   on the C fragments (row max and sum by `shfl.sync.bfly` across the 4 lanes of a row, the
 >   causal mask as `setp` + `selp` on each element's row and column, `cvt.rn.f16x2.f32` to turn
@@ -76,8 +76,8 @@
 >   division by constants without a divide, `.maxntid`, next-key prefetch and one fma per update
 >   in attention, accumulators that always hold equal values computed once, scalar constants as
 >   immediates, `pow` specialized to its exponent, a common-subexpression pass for what
->   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), and f64 reads split between the f64
->   unit and the integer ALUs.
+>   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), f64 reads split between the f64
+>   unit and the integer ALUs, and mma fragments read from global memory as 32-bit words.
 > * **Exact f32 math**: explicit `.rn` rounding, so pointwise results match numpy bit for bit; our
 >   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
 > * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.
@@ -85,7 +85,7 @@
 > **Results.** 15/15 open problems, 332/332 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
 > problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
-> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.79x on the attention and reduction
+> tensor-core matmuls, 0.79x on the 9 f16 attention problems, 0.78x on the attention and reduction
 > problems in f16 and f64 (f64 attention 0.60x), 1.00x on the 24 problems of ops no other problem
 > uses. None of the 336 problems with a reference time is more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
 >

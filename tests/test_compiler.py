@@ -136,6 +136,15 @@ class DataTypes(unittest.TestCase):
         self.assertIn("cvt.rn.f32.f64", straight)
         self.assertNotIn("shf.r.wrap.b32", straight)
 
+    def test_fragments_from_global_load_aligned_pairs_as_words(self):
+        """A register's two adjacent f16 values in one aligned word load as that word; where a
+        K guard can split the pair (K = 50, odd tiles), each half loads on its own."""
+        sdpa = compile_file(str(next(p for p in KERNELS if p.parent.name == "c_f16_x_a_sdpa_b2h4")))
+        self.assertIn("ld.global.nc.b32", sdpa)
+        self.assertNotIn("ld.global.nc.b16", sdpa)
+        odd = compile_file(str(next(p for p in KERNELS if p.parent.name == "t_m_f16_100x70x50")))
+        self.assertIn("ld.global.nc.b16", odd)
+
     def test_integer_f64_reads_round_as_cvt(self):
         """dtypes._read_f64's integer form, run instruction by instruction in numpy, against
         numpy's float32(float64): random bit patterns (NaN and inf among them), exact f32 ties,

@@ -488,7 +488,12 @@ time; otherwise it is `bfe.u32`, `shl.b32`, `xor.b32`.
 Small and odd shapes leave a tile in global memory (`staged=False`). Rows past M (A) or
 columns past N (B) then read the operand's last row or column, and K past its end reads 0:
 mma sums over K, so a duplicate there would count, while the clamped rows' results are never
-stored (`RegStore`'s guards). The `RegStore` epilogue is a small function of the element, its
+stored (`RegStore`'s guards). The two 16-bit values a register holds are adjacent in memory for
+A (and for a B stored N x K); where the facts put the pair in one aligned 32-bit word and no K
+guard splits it, they load as that word, half the loads and no packing. ptxas then issues all
+of a tile's loads ahead of the first `cp.async` wait, where with 16-bit loads it had moved some
+behind it, a second trip to memory before the first mma: `c_f16_x_a_sdpa_b2h4` went from 1.02x
+the reference's time to 0.71x, `c_f16_y_a_64x64x32x64` from 0.83x to 0.68x. The `RegStore` epilogue is a small function of the element, its
 column in the tile (`__N__`) and names in scope: a bias load and add for `linear`, a relu.
 
 All 9 f16 matmuls in `tests/problems` (64 to 512, 96x80x112, 100x70x50, batched, `linear` with
@@ -515,7 +520,7 @@ each trip keeps dozens of fragments live, and the 256-key kernel unrolled spille
 
 The 9 f16 attention problems in `tests/problems` (`t_s_*`: 1 to 8 heads, 64 to 256 keys, head
 size 32 and 64, causal, a given scale, the softmax(q @ k.T) @ v pattern written out) all pass,
-at 0.82x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
+at 0.79x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
 is scheduled by emmy on the scalar path instead.
 
 ## Performance
@@ -551,8 +556,8 @@ to 0.4 s for starting Python and importing emmy. NVRTC took 0.1 to 0.4 s a run t
 
 By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
 attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
-matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x, the open problems in f16,
-f64 and i32 0.91x, attention and reductions in f16 0.88x and 0.91x, in f64 0.60x and 0.92x
+matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.79x, the open problems in f16,
+f64 and i32 0.91x, attention and reductions in f16 0.85x and 0.91x, in f64 0.60x and 0.92x
 (1.71x and 0.97x with `--exact-f64`), and the 24 problems of ops no other problem uses 1.00x
 (about 3 us each, nearly all launch). The "now" and "reference"
 columns come from two runs of both compilers, alternating, taking the lower time of each: the
@@ -584,6 +589,8 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 10. For f64, the fma for f64 held in f32 (under Loops) and f64 reads rounded by the f64 unit
    and the integer ALUs side by side (under Data types): the four f64 SDPA kernels that were
    1.04x to 1.09x the reference's time now take 0.68x to 0.80x.
+11. mma fragments read from global memory as 32-bit words (under Tensor cores):
+   `c_f16_x_a_sdpa_b2h4` from 1.02x to 0.71x, `c_f16_y_a_64x64x32x64` from 0.83x to 0.68x.
 
 None of the 336 problems with a reference time is more than 3% slower. With `--exact-f64`,
 30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x) are: their IR computes in f64
