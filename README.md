@@ -1,6 +1,36 @@
 > **This submission: `ptxc`, a Kernel IR -> PTX compiler.** The organizers' task description
 > follows this box.
 >
+> **In one minute**
+>
+> ```
+> kernel.ir.json -> kernel.py -> lower.py ----------------------------> cse.py -> vectorize.py -> PTX
+>   + meta.json     load the IR   one visit_ per IR statement            drop       merge loads
+>                                 loops.py       each loop's shape        repeated   into .v2/.v4
+>                                 index.py       addresses                rcp/div/
+>                                 facts.py       ranges and divisors      sqrt
+>                                 fmath.py       exp, tanh, sin, pow ...
+>                                 dtypes.py      f16, bf16, f64, ints
+>                                 tensorcore.py  mma.sync, ldmatrix
+> ```
+>
+> 1. `compile.py` reads one Kernel IR file and walks it once, top to bottom. Every IR statement
+>    kind has one `visit_` method that writes its PTX, and each IR line goes into the PTX as a
+>    comment above the instructions that implement it.
+> 2. It works out what it can before the kernel runs. Every integer's range and divisors give
+>    loop trip counts (the loop unrolls), alignment (four loads become one `.v4`) and tests that
+>    always hold (they are dropped).
+> 3. The same parts build all five categories: nothing is special-cased per problem.
+>
+> | | |
+> |---|---|
+> | correct | 15/15 open problems, 308/308 and 23/23 generated ones, on the GPU runner |
+> | fast kernels | 0.84x the time of Emmy's own CUDA over the f32 problems, 0.54x on attention; none of the 312 problems with a reference time is more than 3% slower |
+> | fast compiler | milliseconds: a median of 3 to 6 ms per open-problem kernel, 7 ms over all 358, 3.3 s at most; a run of `compile.py` is mostly Python starting and importing emmy, about 0.4 s |
+> | broad | the 5 categories; f32, f16, bf16, f64, i32, i64 and bool; `cp.async` copies; tensor cores (`mma.sync`, `ldmatrix`) |
+>
+> **Run it**
+>
 > ```bash
 > git clone https://github.com/huixu11/emmy-hackathon-2026 && cd emmy-hackathon-2026
 > pip install emmy-ml==0.3.11 numpy requests

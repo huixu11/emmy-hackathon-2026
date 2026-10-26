@@ -29,6 +29,7 @@ kernel.py   load      IR json -> typed KernelOp body; buffers (shape, dtype); me
 lower.py    plan      lay out every shared array (static symbols, or one dynamic pool > 48 KiB)
             prologue  ld.param + cvta.to.global for each parameter, in meta.json's arg_order
             walk      one visit_<Statement> per IR statement, emitting PTX as it goes
+loops.py              each loop unrolled, counted or prefetching (methods of the same walk)
 cse.py                drop recomputed rcp.rn / div.rn / sqrt.rn, which ptxas keeps
 vectorize.py          merge runs of scalar loads into .v2/.v4 loads where alignment is proven
 ptx.py      render    .version/.target, shared declarations, .entry signature, .reg counts, body
@@ -37,7 +38,9 @@ ptx.py      render    .version/.target, shared declarations, .entry signature, .
 | module | role |
 |---|---|
 | `kernel.py` | Load the IR, the buffer table, scalar constants and the launch contract (`arg_order`, grid x block, `smem_bytes`). |
-| `lower.py` | Translate statements: launch geometry, loops, memory, barriers, cross-thread combines. |
+| `lower.py` | Translate statements: launch geometry, memory, barriers, cross-thread combines. |
+| `loops.py` | The shape of each loop (unrolled, counted, a branch, prefetching), the accumulators a loop seeds, and the copies that always equal them. |
+| `irtree.py` | Walk the IR tree: every node, the names a subtree uses or defines, a body's statements. |
 | `index.py` | Compile integer index expressions, predicates and addresses. |
 | `facts.py` | Track a known range and divisor for every index register. |
 | `fmath.py` | Emit f32 elementwise ops, from `add.rn` up to `tanh`, `erf`, `log` and `pow`. |
@@ -517,6 +520,12 @@ Speed is measured with `tools/run_problems.py --iters 100`, the median of 100 la
 warmup. The baseline is Emmy's reference CUDA (`*.ref.cu`) for the same problem, under the same
 launch, compiled to PTX with NVRTC. The NVRTC build was used only for this comparison and is
 not part of the compiler.
+
+The compiler itself takes milliseconds. In one Python process, `compile_file` takes a median of
+3 to 6 ms per open-problem kernel and at most 0.15 s; over all 358 kernels the median is 7 ms,
+90% take under 0.25 s, and the longest, 3.3 s, is a large f64 attention compiled again to fit
+the runner's limit on a module. A run of `compile.py` adds about 0.4 s for starting Python and
+importing emmy. NVRTC took 0.1 to 0.4 s a run to turn the same kernels' reference CUDA into PTX.
 
 | problem | first version | now | reference |
 |---|---|---|---|

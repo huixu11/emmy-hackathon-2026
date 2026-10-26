@@ -213,6 +213,22 @@ def move(b: PtxBuilder, dst: str, value: str, d: DType) -> None:
 
 # ---- memory ----------------------------------------------------------------------------------
 
+def vec_suffix(width: int) -> str:
+    """The vector suffix of a load or store of `width` values: "", ".v2" or ".v4"."""
+    return "" if width == 1 else f".v{width}"
+
+
+def vector_widths(n: int, d: DType = F32) -> list[int]:
+    """Split n consecutive values into vector accesses (the IR only groups aligned runs). Bytes
+    (bools) go one at a time: PTX's vector byte accesses want 16-bit registers."""
+    if d.nbytes == 1:
+        return [1] * n
+    if n in (1, 2, 4):
+        return [n]
+    width = 4 if n % 4 == 0 else 2 if n % 2 == 0 else 1
+    return [width] * (n // width)
+
+
 def from_memory(b: PtxBuilder, regs: list[str], d: DType, integer: bool = False) -> list[str]:
     """Values of dtype d from the registers a load of d wrote. `integer`: f64 reads may be
     converted in integer instructions (_read_f64)."""
