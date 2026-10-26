@@ -1,10 +1,10 @@
 """Integer index arithmetic, predicates and memory addresses.
 
-An index expression (Var / Literal / BinaryExpr / TernaryExpr) compiles to `Lin(reg, const)`:
-a register plus a compile-time constant. Keeping the constant apart lets it fold through
-additions and constant multiplies and land in the address immediate, so the unrolled loads
-`x[(a0 * 4) + 1]` and `x[(a0 * 4) + 2]` share one address register and differ only in the
-offset: `[%rd5+4]`, `[%rd5+8]`.
+An index expression (Var / Literal / BinaryExpr / TernaryExpr / an integer CastExpr) compiles
+to `Lin(reg, const)`: a register plus a compile-time constant. Keeping the constant apart lets
+it fold through additions and constant multiplies and land in the address immediate, so the
+unrolled loads `x[(a0 * 4) + 1]` and `x[(a0 * 4) + 2]` share one address register and differ
+only in the offset: `[%rd5+4]`, `[%rd5+8]`.
 
 Integer arithmetic is 32-bit signed, the `int` of the reference CUDA (buffers hold at most
 2^26 elements, so byte offsets fit). Every instruction emitted here is pure and goes through
@@ -17,11 +17,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from emmy.compiler.ir.expr import BinaryExpr, Expr, Literal, TernaryExpr, Var
+from emmy.compiler.ir.expr import BinaryExpr, CastExpr, Expr, Literal, TernaryExpr, Var
 
 from .errors import CompileError
 from .facts import UNKNOWN, Fact, infer
-from .ptx import PtxBuilder, address
+from .ptx import PtxBuilder, address, is_register, register_class
 from .scope import Scopes
 
 
@@ -42,6 +42,8 @@ _FOLD_BITWISE = {"&": int.__and__, "|": int.__or__, "^": int.__xor__,
 _COMPARE = {"<": "lt", "<=": "le", ">": "gt", ">=": "ge", "==": "eq", "!=": "ne"}
 _MIRROR = {"lt": "gt", "le": "ge", "gt": "lt", "ge": "le", "eq": "eq", "ne": "ne"}
 _LOGIC = {"&&": "and.pred", "||": "or.pred"}
+_INT_CASTS = {"int", "int32", "i32", "long", "int64", "i64"}
+_TO_INT = {"b32": "mov.b32", "b64": "cvt.u32.u64", "f32": "cvt.rzi.s32.f32", "f64": "cvt.rzi.s32.f64"}
 
 
 def _decide(cmp: str, a: Fact, b: Fact) -> bool | None:
@@ -135,7 +137,22 @@ class IndexCompiler:
                 return self.value(e.if_true if p else e.if_false)
             t, f = self.value(e.if_true), self.value(e.if_false)
             return Lin(self.derive("b32", "selp.b32", self.operand(t), self.operand(f), p))
+        if isinstance(e, CastExpr) and e.dtype in _INT_CASTS:
+            return self._as_index(e.expr)
         raise CompileError(f"unsupported index expression: {e!r}")
+
+    def _as_index(self, e: Expr) -> Lin:
+        """`(int)e`: an index is an int already; a data value (the i64 or the bool-as-1.0 an
+        embedding or gather computes its row from) is converted, as C does, into a register of
+        its own, never cached, since the value's register can be assigned again."""
+        v = self.scopes.lookup(e.name) if isinstance(e, Var) else None
+        if not isinstance(v, str):
+            return self.value(e)
+        if not is_register(v) or register_class(v) not in _TO_INT:
+            raise CompileError(f"cannot use {e.name!r} as an index")
+        dst = self.b.reg("b32")
+        self.b.emit(_TO_INT[register_class(v)], dst, v)
+        return Lin(dst)
 
     def arith(self, op: str, a: Lin, b: Lin) -> Lin:
         if op == "+":

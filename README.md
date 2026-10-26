@@ -24,10 +24,10 @@
 >
 > | | |
 > |---|---|
-> | correct | 15/15 open problems, 308/308 and 23/23 generated ones, on the GPU runner |
-> | fast kernels | 0.84x the time of Emmy's own CUDA over the f32 problems, 0.54x on attention; none of the 312 problems with a reference time is more than 3% slower |
-> | fast compiler | milliseconds: a median of 3 to 6 ms per open-problem kernel, 7 ms over all 358, 3.3 s at most; a run of `compile.py` is mostly Python starting and importing emmy, about 0.4 s |
-> | broad | the 5 categories; f32, f16, bf16, f64, i32, i64 and bool; `cp.async` copies; tensor cores (`mma.sync`, `ldmatrix`) |
+> | correct | 15/15 open problems, 332/332 and 23/23 generated ones, on the GPU runner |
+> | fast kernels | 0.84x the time of Emmy's own CUDA over the f32 problems, 0.54x on attention; none of the 336 problems with a reference time is more than 3% slower |
+> | fast compiler | milliseconds: a median of 3 to 4 ms per open-problem kernel, 4 ms over all 382, about 2 s at most; a run of `compile.py` is mostly Python starting and importing emmy, 0.3 to 0.4 s |
+> | broad | the 5 categories; f32, f16, bf16, f64, i32, i64 and bool; gather, embedding, conv1d and the data-movement ops; `cp.async` copies; tensor cores (`mma.sync`, `ldmatrix`) |
 >
 > **Run it**
 >
@@ -36,9 +36,9 @@
 > pip install emmy-ml==0.3.11 numpy requests
 > python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > r04.ptx   # IR in, PTX out
 >
-> python -m unittest discover -s tests      # offline: all 358 kernels compile, deterministically
+> python -m unittest discover -s tests      # offline: all 382 kernels compile, deterministically
 > python tools/run_problems.py               # the 15 open problems on the GPU runner: 15/15
-> python tools/run_problems.py --dir tests/problems   # 308 more, all categories and dtypes: 308/308
+> python tools/run_problems.py --dir tests/problems   # 332 more, all categories and dtypes: 332/332
 > python tools/run_packed.py                 # 23 bf16 / bool problems (packed, see below): 23/23
 > python tools/run_problems.py --iters 100   # median of 100 launches, as DESIGN.md reports
 > ```
@@ -82,19 +82,19 @@
 >   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
 > * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.
 >
-> **Results.** 15/15 open problems, 308/308 in `tests/problems`, 23/23 in `tests/problems_packed`.
+> **Results.** 15/15 open problems, 332/332 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
 > problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
 > tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.79x on the attention and reduction
-> problems in f16 and f64 (f64 attention 0.60x). None of the 312 problems with a reference time is
-> more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
+> problems in f16 and f64 (f64 attention 0.60x), 1.00x on the 24 problems of ops no other problem
+> uses. None of the 336 problems with a reference time is more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
 > | where | what |
 > |---|---|
 > | `tests/test_compiler.py` | offline unit tests (`python -m unittest discover -s tests`) |
-> | `tests/problems/` | 308 problems from `tests/expressions_variants.py` and `tests/expressions_cross.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), and the open problems in f16, f64 and i32 and the attention and reduction problems in f16 and f64 (`c_*`) |
+> | `tests/problems/` | 332 problems from `tests/expressions_variants.py`, `tests/expressions_cross.py` and `tests/expressions_ops.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), the open problems in f16, f64 and i32 and the attention and reduction problems in f16 and f64 (`c_*`), and the ops no other problem uses: gather, embedding, index_select, conv1d, cat, stack, roll, transpose, tril/triu, and the comparisons and bool combines (`u_*`) |
 > | `tests/problems_packed/` | bf16 and bool problems, the open problems in bf16 among them: the runner cannot allocate those buffers, so `tools/run_packed.py` passes them as int32 words |
 > | `examples/compiled/` | seven kernels' IR next to our PTX, with notes on what to look for |
 > | `tools/pow_sweep.py` | `pow` on 27 exponents and the special values, against C's `pow` |

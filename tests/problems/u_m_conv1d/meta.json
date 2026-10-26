@@ -1,0 +1,71 @@
+{
+ "id": "u_m_conv1d",
+ "code": "x = torch.randn(1, 4, 64); w = torch.randn(8, 4, 3); torch.nn.functional.conv1d(x, w)",
+ "rtol": 0.0001,
+ "atol": 0.0001,
+ "graph_inputs": [
+  "x",
+  "w"
+ ],
+ "graph_outputs": [
+  "conv1d"
+ ],
+ "kernels": [
+  {
+   "node": "conv1d",
+   "entry": "k_conv1d",
+   "arg_order": [
+    "x",
+    "w",
+    "conv1d"
+   ],
+   "grid": [
+    1,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [
+    "conv1d"
+   ],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      1,
+      4,
+      64
+     ],
+     "seed": 0
+    },
+    {
+     "name": "w",
+     "dtype": "f32",
+     "shape": [
+      8,
+      4,
+      3
+     ],
+     "seed": 1
+    },
+    {
+     "name": "conv1d",
+     "dtype": "f32",
+     "shape": [
+      1,
+      8,
+      62
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

@@ -1,0 +1,76 @@
+{
+ "id": "u_p_index_select",
+ "code": "w = torch.randn(8, 32); x = torch.randn(64); torch.index_select(w, 0, (x > 0).long())",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "w",
+  "x"
+ ],
+ "graph_outputs": [
+  "index_select"
+ ],
+ "kernels": [
+  {
+   "node": "index_select",
+   "entry": "k_index_select_pointwise",
+   "arg_order": [
+    "gt_c1",
+    "x",
+    "w",
+    "index_select"
+   ],
+   "grid": [
+    2,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "gt_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      0.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64
+     ],
+     "seed": 1
+    },
+    {
+     "name": "w",
+     "dtype": "f32",
+     "shape": [
+      8,
+      32
+     ],
+     "seed": 0
+    },
+    {
+     "name": "index_select",
+     "dtype": "f32",
+     "shape": [
+      64,
+      32
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

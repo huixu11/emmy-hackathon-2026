@@ -1,0 +1,44 @@
+extern "C" __global__
+__launch_bounds__(256) void k_embedding_pointwise(const float* gt_c1, const float* gt_1_c1, const float* x, const float* w, float* embedding) {
+    int _gid = blockIdx.x * blockDim.x + threadIdx.x;
+        int a0 = _gid / 16;
+        int a1 = (_gid) % 16;
+        float in1__u0 = gt_c1[0];
+        float in2__u0 = x[a0];
+        bool v0__u0 = in2__u0 > in1__u0;
+        long long v1__u0 = v0__u0;
+        float in0__u0 = gt_1_c1[0];
+        bool v2__u0 = in2__u0 > in0__u0;
+        long long v3__u0 = v2__u0;
+        long long v4__u0 = v1__u0 + v3__u0;
+        float in1__u1 = gt_c1[0];
+        float in2__u1 = x[a0];
+        bool v0__u1 = in2__u1 > in1__u1;
+        long long v1__u1 = v0__u1;
+        float in0__u1 = gt_1_c1[0];
+        bool v2__u1 = in2__u1 > in0__u1;
+        long long v3__u1 = v2__u1;
+        long long v4__u1 = v1__u1 + v3__u1;
+        float in1__u2 = gt_c1[0];
+        float in2__u2 = x[a0];
+        bool v0__u2 = in2__u2 > in1__u2;
+        long long v1__u2 = v0__u2;
+        float in0__u2 = gt_1_c1[0];
+        bool v2__u2 = in2__u2 > in0__u2;
+        long long v3__u2 = v2__u2;
+        long long v4__u2 = v1__u2 + v3__u2;
+        float in1__u3 = gt_c1[0];
+        float in2__u3 = x[a0];
+        bool v0__u3 = in2__u3 > in1__u3;
+        long long v1__u3 = v0__u3;
+        float in0__u3 = gt_1_c1[0];
+        bool v2__u3 = in2__u3 > in0__u3;
+        long long v3__u3 = v2__u3;
+        long long v4__u3 = v1__u3 + v3__u3;
+        float in3__u0 = w[((int)(v4__u0)) * 64 + a1 * 4];
+        float in3__u1 = w[((int)(v4__u1)) * 64 + (a1 * 4 + 1)];
+        float in3__u2 = w[((int)(v4__u2)) * 64 + (a1 * 4 + 2)];
+        float in3__u3 = w[((int)(v4__u3)) * 64 + (a1 * 4 + 3)];
+        float4 _vs_in3__u0_10c38afe = make_float4(in3__u0, in3__u1, in3__u2, in3__u3);
+        *reinterpret_cast<float4*>(&embedding[a0 * 64 + a1 * 4]) = _vs_in3__u0_10c38afe;
+}

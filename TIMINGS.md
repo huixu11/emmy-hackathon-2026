@@ -14,10 +14,11 @@ ptxc's kernel times against Emmy's own CUDA for the same problems, on the GPU ru
 | f16 attention on tensor cores | 9 | 0.82× | 3 | 6 | 0 |
 | the open problems in f16, f64 and i32 | 39 (36 with a reference) | 0.91× | 9 | 27 | 0 |
 | attention and reductions in f16 and f64 | 98 (95 with a reference) | 0.79× | 53 | 42 | 0 |
+| ops no other problem uses | 24 | 1.00× | 0 | 24 | 0 |
 | **all f32** (the five categories) | 149 (147 with a reference) | 0.84× | 48 | 99 | 0 |
-| **all** | 323 (312 with a reference) | 0.84× | 113 | 199 | 0 |
+| **all** | 347 (336 with a reference) | 0.85× | 113 | 223 | 0 |
 
-The rows do not overlap: the 323 are the 149 f32 problems of the five categories plus 174 in other data types or on tensor cores, and all 323 pass. The 23 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 11 (see their rows). None is more than 3% slower than the reference.
+The rows do not overlap: the 347 are the 149 f32 problems of the five categories plus 198 in other data types, on tensor cores or in the ops batch, and all 347 pass. The 23 bf16 and bool problems in `tests/problems_packed` pass too, but the runner cannot time them. The figures in brackets count the problems with a reference time: the reference itself fails 11 (see their rows). None is more than 3% slower than the reference.
 
 The tables below list each set's problems from the slowest relative to the reference to the fastest.
 
@@ -408,10 +409,52 @@ The 49 attention and reduction problems above, with every input in f16 or f64. I
 | `c_f16_x_r_mean_cols` | 4.77 | — | no reference: NVRTC rejects its reference source |
 | `c_f16_z_r_pow_mean` | 4.42 | — | no reference: NVRTC rejects its reference source |
 
+## Ops no other problem uses (24 problems, 1.00×)
+
+Data movement (cat, stack, roll, a 3-d transpose, expand, repeat_interleave, tril and triu, chunk), indexing by computed integers (index_select, embedding, gather), conv1d, and the comparisons and bool combines the other problems leave out (>=, <, ==, !=, &, |), in f32, f16, f64 and i32 and inside reductions (`tests/expressions_ops.py`). They are a few thousand elements each, so every kernel takes about 3 µs, nearly all of it launch: the batch is there to show these ops compile and come out right, and none is slower than the reference.
+
+| problem | ours (µs) | reference (µs) | ours / reference |
+|---|---|---|---|
+| `u_p_expand` | 3.04 | 2.98 | 1.02× |
+| `u_p_lt_scalar` | 3.07 | 3.01 | 1.02× |
+| `u_p_chunk_glu` | 2.94 | 2.91 | 1.01× |
+| `u_p_roll_2d` | 2.98 | 2.94 | 1.01× |
+| `u_p_tril` | 3.04 | 3.01 | 1.01× |
+| `u_r_f64_masked_sum` | 3.04 | 3.01 | 1.01× |
+| `u_p_embedding` | 3.10 | 3.07 | 1.01× |
+| `u_p_ge_where` | 2.99 | 2.98 | 1.01× |
+| `u_p_cat_cols` | 3.02 | 3.01 | 1.01× |
+| `u_p_and_mask` | 3.10 | 3.10 | 1.00× |
+| `u_p_i32_eq` | 3.01 | 3.01 | 1.00× |
+| `u_p_or_mask` | 3.10 | 3.10 | 1.00× |
+| `u_p_repeat_interleave` | 2.98 | 2.98 | 1.00× |
+| `u_p_roll` | 2.91 | 2.91 | 1.00× |
+| `u_r_masked_sum` | 3.26 | 3.26 | 1.00× |
+| `u_p_transpose_3d` | 2.96 | 2.98 | 0.99× |
+| `u_m_conv1d` | 3.26 | 3.30 | 0.99× |
+| `u_p_stack` | 3.04 | 3.07 | 0.99× |
+| `u_p_f16_leaky` | 3.01 | 3.04 | 0.99× |
+| `u_p_i32_ne` | 3.01 | 3.04 | 0.99× |
+| `u_p_index_select` | 3.01 | 3.04 | 0.99× |
+| `u_p_triu_diag` | 3.01 | 3.04 | 0.99× |
+| `u_p_gather` | 2.98 | 3.01 | 0.99× |
+| `u_f_masked_softmax` | 3.02 | 3.07 | 0.98× |
+
+## Compile time
+
+`compile_file` in one Python process, on the 4-core container this repo was developed in:
+
+| kernels | median | 90% under | longest |
+|---|---|---|---|
+| the 15 open problems | 3 to 4 ms | 0.05 s | 0.08 s |
+| all 382 (`problems`, `tests/problems`, `tests/problems_packed`) | 4 ms | 0.15 s | about 2 s |
+
+The longest are f64 attentions whose fully unrolled module, with integer f64 reads, is over the runner's 2,000,000-character limit, so they are compiled again with `cvt` reads (`c_f64_y_s_1x1x256x64`: 4.0 M characters in 1.1 s, then 0.64 M in 0.7 s). A run of `compile.py` adds 0.3 to 0.4 s for starting Python and importing emmy. NVRTC took 0.1 to 0.4 s a run to turn the same kernels' reference CUDA into PTX.
+
 ## How these were measured
 
 * **Time:** the median of 100 launches after a warmup (`tools/run_problems.py --iters 100`). Each compiler ran twice, the two alternating; each figure is the lower of its two runs.
-* **Ours:** `compile.py` as submitted, f64 computed in f32 (the default). Every change since commit f5af27d, where the f32, dtype and tensor-core rows were measured, leaves the PTX of those problems as it was; the f64 rows were measured again after the default changed, and the 46 whose PTX the f64 reads (integer rounding, fma) changed were measured again with this compiler. All problems pass.
+* **Ours:** `compile.py` as submitted, f64 computed in f32 (the default). Every change since commit f5af27d, where the f32, dtype and tensor-core rows were measured, leaves the PTX of those problems as it was; the f64 rows were measured again after the default changed, and the 46 whose PTX the f64 reads (integer rounding, fma) changed were measured again with that compiler. The ops batch (`u_*`) was measured last, with the compiler as submitted; the integer casts it needed in index expressions leave the PTX of every other problem as it was. All problems pass.
 * **Reference:** Emmy's own CUDA for each problem (`*.ref.cu`), compiled to PTX with NVRTC and run under the same launch. That build is a yardstick only; it is not part of the compiler or of this repo.
 * **One session:** the runner's speed drifts by about 20% between sessions, so figures from different sessions do not compare; each row's two columns come from one session.
 * **Cold times differ:** without `--iters`, `run_problems.py` shows one cold launch per problem, which reads higher (a02: about 41 µs cold against 29.3 µs here).

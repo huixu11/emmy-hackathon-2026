@@ -1,0 +1,77 @@
+{
+ "id": "u_f_masked_softmax",
+ "code": "x = torch.randn(64, 128); torch.softmax(x.masked_fill(x < -1.0, -1e9), dim=-1)",
+ "rtol": 1e-05,
+ "atol": 1e-06,
+ "graph_inputs": [
+  "x"
+ ],
+ "graph_outputs": [
+  "softmax"
+ ],
+ "kernels": [
+  {
+   "node": "softmax",
+   "entry": "k_softmax_5c6897",
+   "arg_order": [
+    "masked_fill_c2",
+    "lt_c1",
+    "x",
+    "softmax"
+   ],
+   "grid": [
+    64,
+    1,
+    1
+   ],
+   "block": [
+    128,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "masked_fill_c2",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      -1000000000.0
+     ]
+    },
+    {
+     "name": "lt_c1",
+     "dtype": "f32",
+     "shape": [
+      1
+     ],
+     "data": [
+      -1.0
+     ]
+    },
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      64,
+      128
+     ],
+     "seed": 0
+    },
+    {
+     "name": "softmax",
+     "dtype": "f32",
+     "shape": [
+      64,
+      128
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

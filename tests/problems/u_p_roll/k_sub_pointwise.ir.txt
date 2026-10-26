@@ -1,0 +1,26 @@
+    Tile[a0] (N=1024)
+        in0__u0 = load x[(((a0 * 4) + 0) + -7)]
+        in1__u0 = load x[(((a0 * 4) + 0) + 4089)]
+        v0__u0 = in1__u0 when ((((a0 * 4) + 0) < 7))
+                 in0__u0 when (True)
+        in2__u0 = load x[((a0 * 4) + 0)]
+        f32 v1__u0 = subtract(v0__u0, in2__u0)
+        in0__u1 = load x[(((a0 * 4) + 1) + -7)]
+        in1__u1 = load x[(((a0 * 4) + 1) + 4089)]
+        v0__u1 = in1__u1 when ((((a0 * 4) + 1) < 7))
+                 in0__u1 when (True)
+        in2__u1 = load x[((a0 * 4) + 1)]
+        f32 v1__u1 = subtract(v0__u1, in2__u1)
+        in0__u2 = load x[(((a0 * 4) + 2) + -7)]
+        in1__u2 = load x[(((a0 * 4) + 2) + 4089)]
+        v0__u2 = in1__u2 when ((((a0 * 4) + 2) < 7))
+                 in0__u2 when (True)
+        in2__u2 = load x[((a0 * 4) + 2)]
+        f32 v1__u2 = subtract(v0__u2, in2__u2)
+        in0__u3 = load x[(((a0 * 4) + 3) + -7)]
+        in1__u3 = load x[(((a0 * 4) + 3) + 4089)]
+        v0__u3 = in1__u3 when ((((a0 * 4) + 3) < 7))
+                 in0__u3 when (True)
+        in2__u3 = load x[((a0 * 4) + 3)]
+        f32 v1__u3 = subtract(v0__u3, in2__u3)
+        sub[((a0 * 4) + 0)] = (v1__u0, v1__u1, v1__u2, v1__u3)
