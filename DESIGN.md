@@ -6,12 +6,12 @@
 python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > out.ptx
 python compile.py --exact-f64 path/to/kernel.ir.json > out.ptx   # f64 in f64 (default: in f32)
 python tools/run_problems.py                     # the 15 open problems on the GPU runner
-python tools/run_problems.py --dir tests/problems   # 308 extra hidden-set-style problems
+python tools/run_problems.py --dir tests/problems   # 332 extra hidden-set-style problems
 python tools/run_packed.py                       # 23 with bf16 or bool buffers
 python -m unittest discover -s tests             # offline: every kernel compiles
 ```
 
-Results on the runner (RTX 5090): **15/15 open problems**, all five categories, **308/308** of
+Results on the runner (RTX 5090): **15/15 open problems**, all five categories, **332/332** of
 the extra problems in `tests/problems` and **23/23** in `tests/problems_packed`. Beyond f32,
 the compiler handles f16, bf16, f64, i32, i64 and bool values ([Data types](#data-types-dtypespy)),
 and f16 / bf16 matmuls and f16 attention on tensor cores ([Tensor cores](#tensor-cores-tensorcorepy)). Pointwise
@@ -29,6 +29,7 @@ kernel.py   load      IR json -> typed KernelOp body; buffers (shape, dtype); me
 lower.py    plan      lay out every shared array (static symbols, or one dynamic pool > 48 KiB)
             prologue  ld.param + cvta.to.global for each parameter, in meta.json's arg_order
             walk      one visit_<Statement> per IR statement, emitting PTX as it goes
+loops.py              each loop unrolled, counted or prefetching (methods of the same walk)
 cse.py                drop recomputed rcp.rn / div.rn / sqrt.rn, which ptxas keeps
 vectorize.py          merge runs of scalar loads into .v2/.v4 loads where alignment is proven
 ptx.py      render    .version/.target, shared declarations, .entry signature, .reg counts, body
@@ -37,7 +38,9 @@ ptx.py      render    .version/.target, shared declarations, .entry signature, .
 | module | role |
 |---|---|
 | `kernel.py` | Load the IR, the buffer table, scalar constants and the launch contract (`arg_order`, grid x block, `smem_bytes`). |
-| `lower.py` | Translate statements: launch geometry, loops, memory, barriers, cross-thread combines. |
+| `lower.py` | Translate statements: launch geometry, memory, barriers, cross-thread combines. |
+| `loops.py` | The shape of each loop (unrolled, counted, a branch, prefetching), the accumulators a loop seeds, and the copies that always equal them. |
+| `irtree.py` | Walk the IR tree: every node, the names a subtree uses or defines, a body's statements. |
 | `index.py` | Compile integer index expressions, predicates and addresses. |
 | `facts.py` | Track a known range and divisor for every index register. |
 | `fmath.py` | Emit f32 elementwise ops, from `add.rn` up to `tanh`, `erf`, `log` and `pow`. |
@@ -83,8 +86,9 @@ the two places the SSA-looking IR really mutates.
 
 ## Index expressions (`index.py`)
 
-Index expressions are small trees of `Var`, `Literal`, `BinaryExpr` and `TernaryExpr`. They
-compile recursively to `Lin` values, with constant folding:
+Index expressions are small trees of `Var`, `Literal`, `BinaryExpr`, `TernaryExpr` and, for a row
+an embedding or gather computes from data, `CastExpr`. They compile recursively to `Lin`
+values, with constant folding:
 
 * `+` adds the constants and emits `add.s32` only when both sides have registers;
 * `*` by a constant distributes over the constant, `(r + c) * k = r*k + c*k`;
@@ -95,7 +99,10 @@ compile recursively to `Lin` values, with constant folding:
   `0 <= a < 2^31`. This matters because ptxas turns `div.u32 x, 128` into a full
   reciprocal-based division;
 * comparisons fold (also when the operands' ranges settle them) or emit `setp`, `&&`/`||`
-  short-circuit on constants, `?:` becomes `selp`.
+  short-circuit on constants, `?:` becomes `selp`;
+* `(int)v` of a data value converts it as C does (`cvt.u32.u64` for an i64, `cvt.rzi.s32.f32`
+  for a bool held as 1.0), into a register of its own that is never reused: the value's
+  register can be assigned again.
 
 Keeping the constant part separate lets it reach the **address immediate**. The unrolled
 loads `x[a0*4 + 0..3]` share one address register and differ only in the offset:
@@ -481,7 +488,12 @@ time; otherwise it is `bfe.u32`, `shl.b32`, `xor.b32`.
 Small and odd shapes leave a tile in global memory (`staged=False`). Rows past M (A) or
 columns past N (B) then read the operand's last row or column, and K past its end reads 0:
 mma sums over K, so a duplicate there would count, while the clamped rows' results are never
-stored (`RegStore`'s guards). The `RegStore` epilogue is a small function of the element, its
+stored (`RegStore`'s guards). The two 16-bit values a register holds are adjacent in memory for
+A (and for a B stored N x K); where the facts put the pair in one aligned 32-bit word and no K
+guard splits it, they load as that word, half the loads and no packing. ptxas then issues all
+of a tile's loads ahead of the first `cp.async` wait, where with 16-bit loads it had moved some
+behind it, a second trip to memory before the first mma: `c_f16_x_a_sdpa_b2h4` went from 1.02x
+the reference's time to 0.71x, `c_f16_y_a_64x64x32x64` from 0.83x to 0.68x. The `RegStore` epilogue is a small function of the element, its
 column in the tile (`__N__`) and names in scope: a bias load and add for `linear`, a relu.
 
 All 9 f16 matmuls in `tests/problems` (64 to 512, 96x80x112, 100x70x50, batched, `linear` with
@@ -508,7 +520,7 @@ each trip keeps dozens of fragments live, and the 256-key kernel unrolled spille
 
 The 9 f16 attention problems in `tests/problems` (`t_s_*`: 1 to 8 heads, 64 to 256 keys, head
 size 32 and 64, causal, a given scale, the softmax(q @ k.T) @ v pattern written out) all pass,
-at 0.82x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
+at 0.79x the reference's time and none above 1.01x. One of them, with an additive `attn_mask`,
 is scheduled by emmy on the scalar path instead.
 
 ## Performance
@@ -517,6 +529,12 @@ Speed is measured with `tools/run_problems.py --iters 100`, the median of 100 la
 warmup. The baseline is Emmy's reference CUDA (`*.ref.cu`) for the same problem, under the same
 launch, compiled to PTX with NVRTC. The NVRTC build was used only for this comparison and is
 not part of the compiler.
+
+The compiler itself takes milliseconds. In one Python process, `compile_file` takes a median of
+3 to 4 ms per open-problem kernel and at most 0.08 s; over all 382 kernels the median is 4 ms,
+90% take under 0.15 s, and the longest, about 2 s, are large f64 attentions compiled again to
+fit the runner's limit on a module (TIMINGS.md, Compile time). A run of `compile.py` adds 0.3
+to 0.4 s for starting Python and importing emmy. NVRTC took 0.1 to 0.4 s a run to turn the same kernels' reference CUDA into PTX.
 
 | problem | first version | now | reference |
 |---|---|---|---|
@@ -538,9 +556,10 @@ not part of the compiler.
 
 By category, over all 147: pointwise 0.98x, reductions 0.94x, matmul 0.94x, fused 0.88x,
 attention 0.54x. Beyond f32: the 16 dtype problems with a reference time 0.97x, the 9 f16
-matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.82x, the open problems in f16,
-f64 and i32 0.91x, attention and reductions in f16 0.88x and 0.91x, in f64 0.60x and 0.92x
-(1.71x and 0.97x with `--exact-f64`). The "now" and "reference"
+matmuls on tensor cores 1.00x, the 9 f16 attention problems 0.79x, the open problems in f16,
+f64 and i32 0.91x, attention and reductions in f16 0.85x and 0.91x, in f64 0.60x and 0.92x
+(1.71x and 0.97x with `--exact-f64`), and the 24 problems of ops no other problem uses 1.00x
+(about 3 us each, nearly all launch). The "now" and "reference"
 columns come from two runs of both compilers, alternating, taking the lower time of each: the
 runner's speed drifts by about 20% between sessions, so figures from different sessions do
 not compare. Every problem's figures are in [TIMINGS.md](TIMINGS.md).
@@ -570,8 +589,10 @@ What closed the gap, in the order it was found by comparing our SASS with the re
 10. For f64, the fma for f64 held in f32 (under Loops) and f64 reads rounded by the f64 unit
    and the integer ALUs side by side (under Data types): the four f64 SDPA kernels that were
    1.04x to 1.09x the reference's time now take 0.68x to 0.80x.
+11. mma fragments read from global memory as 32-bit words (under Tensor cores):
+   `c_f16_x_a_sdpa_b2h4` from 1.02x to 0.71x, `c_f16_y_a_64x64x32x64` from 0.83x to 0.68x.
 
-None of the 312 problems with a reference time is more than 3% slower. With `--exact-f64`,
+None of the 336 problems with a reference time is more than 3% slower. With `--exact-f64`,
 30 f64 attention kernels (1.1x to 2.9x) and 2 row maxima (1.6x) are: their IR computes in f64
 (q @ k's products, a running max and its 64-bit shuffles), which
 the RTX 5090 runs at 1/64 of the f32 rate, while the reference's CUDA declares every f64 value
@@ -592,9 +613,9 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
 
 * `tools/run_problems.py` runs `submit.py`'s exact check (compile with `compile.py`, assemble,
   run under meta.json's launch, compare with `expected.npz`) over many problems.
-* `tests/problems/` holds 308 problems generated by `tools/generate.py` from
-  `tests/expressions_variants.py` and `tests/expressions_cross.py`: new shapes and ops in all
-  five categories. They include odd
+* `tests/problems/` holds 332 problems generated by `tools/generate.py` from
+  `tests/expressions_variants.py`, `tests/expressions_cross.py` and `tests/expressions_ops.py`:
+  new shapes and ops in all five categories. They include odd
   sizes, 3-D and outer broadcasts, every renderable elementwise op (`sin`/`cos` included),
   composite activations (mish, elu, hardswish), unpinned (multi-block, atomic), column,
   middle-axis and 2^20-element reductions, a scan (`cumsum`), batched, skinny, split-K,
@@ -615,6 +636,14 @@ helped `w_a_512x64` (169 -> 154 us) and slowed `x_a_causal` and `y_a_64x64x256x6
   `tests/expressions_cross.py`) is the 15 open problems with every input in f16, bf16, f64 or
   i32, and the 49 attention and reduction problems in f16 and f64; it found the gaps
   listed under Data types.
+* The tenth batch (`u_*`, `tests/expressions_ops.py`) takes the ops no earlier problem used:
+  cat, stack, roll, a 3-d transpose, expand, repeat_interleave, tril/triu, chunk, index_select,
+  embedding, gather, conv1d, and the comparisons and bool combines `>=`, `<`, `==`, `!=`, `&`,
+  `|`, in f32, f16, f64 and i32 and inside reductions. It found one gap, fixed: index_select,
+  embedding and gather index by `(int)` of a computed value, a `CastExpr` the index compiler
+  did not take. It also found three ops emmy itself traces wrong, so its reference fails too,
+  and they are left out: `torch.arange` and `torch.eye` come back as the input they are
+  combined with (`x * arange(n)` traces as `x * x`), and a 3-d `permute` as a reshape.
 * `tests/test_compiler.py` runs offline (`python -m unittest discover -s tests`): every kernel of
   every problem compiles to its meta.json launch contract, gives the same PTX on every run
   (nothing may depend on Python's string hashing), and assembles with `ptxas` when one is found;

@@ -1,0 +1,26 @@
+    Tile[a0, a1] (N=1280)
+        in2__u0 = load a[a0, ((((a1 * 4) + 0) < 32) ? ((a1 * 4) + 0) : 0)]
+        in1__u0 = load b[a0, ((((a1 * 4) + 0) < 32) ? 0 : (((a1 * 4) + 0) + -32))]
+        v0__u0 = in2__u0 when ((((a1 * 4) + 0) < 32))
+                 in1__u0 when (True)
+        in0__u0 = load mul_c1[0]
+        f32 v1__u0 = multiply(in0__u0, v0__u0)
+        in2__u1 = load a[a0, ((((a1 * 4) + 1) < 32) ? ((a1 * 4) + 1) : 0)]
+        in1__u1 = load b[a0, ((((a1 * 4) + 1) < 32) ? 0 : (((a1 * 4) + 1) + -32))]
+        v0__u1 = in2__u1 when ((((a1 * 4) + 1) < 32))
+                 in1__u1 when (True)
+        in0__u1 = load mul_c1[0]
+        f32 v1__u1 = multiply(in0__u1, v0__u1)
+        in2__u2 = load a[a0, ((((a1 * 4) + 2) < 32) ? ((a1 * 4) + 2) : 0)]
+        in1__u2 = load b[a0, ((((a1 * 4) + 2) < 32) ? 0 : (((a1 * 4) + 2) + -32))]
+        v0__u2 = in2__u2 when ((((a1 * 4) + 2) < 32))
+                 in1__u2 when (True)
+        in0__u2 = load mul_c1[0]
+        f32 v1__u2 = multiply(in0__u2, v0__u2)
+        in2__u3 = load a[a0, ((((a1 * 4) + 3) < 32) ? ((a1 * 4) + 3) : 0)]
+        in1__u3 = load b[a0, ((((a1 * 4) + 3) < 32) ? 0 : (((a1 * 4) + 3) + -32))]
+        v0__u3 = in2__u3 when ((((a1 * 4) + 3) < 32))
+                 in1__u3 when (True)
+        in0__u3 = load mul_c1[0]
+        f32 v1__u3 = multiply(in0__u3, v0__u3)
+        mul[a0, ((a1 * 4) + 0)] = (v1__u0, v1__u1, v1__u2, v1__u3)

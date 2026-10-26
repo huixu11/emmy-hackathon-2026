@@ -127,7 +127,9 @@ class TensorCores:
     def _fragment_from_global(self, ld, regs: list[str]) -> None:
         """A fragment read straight from global memory, two 16-bit values per register, in
         mma's lane map. Rows (A) or columns (B) past the guard read the last valid one; K
-        past k_zero reads 0."""
+        past k_zero reads 0. Two adjacent values in an aligned word load as that word: half
+        the loads, and ptxas then issues them all ahead of the first cp.async wait
+        (`c_f16_x_a_sdpa_b2h4`: 4.75 -> 3.25 us)."""
         d = self._buffer_dtype(ld.src_buffer)
         if d.nbytes != 2:
             raise CompileError(f"fragment from {ld.src_buffer!r}: a 16-bit buffer is needed")
@@ -163,6 +165,13 @@ class TensorCores:
                     second = self.idx.add(first, Lin(None, ldm))
                 pairs.append(((first, k), (second, self.idx.add(k, Lin(None, 1)))))
         for reg, halves in zip(regs, pairs):
+            (first, _), (second, _) = halves
+            if k_left is None and second == self.idx.add(first, Lin(None, 1)):
+                _, addr = self._address(ld.src_buffer, first)
+                base, _, offset = addr.strip("[]").partition("+")
+                if self._alignment(base) % 4 == 0 and int(offset or 0) % 4 == 0:
+                    self.b.emit("ld.global.nc.b32", reg, addr)
+                    continue
             h = [self._half_from_global(ld.src_buffer, element, k, k_left) for element, k in halves]
             self.b.emit("mov.b32", reg, "{" + f"{h[0]}, {h[1]}" + "}")
 

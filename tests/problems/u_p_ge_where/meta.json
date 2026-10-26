@@ -1,0 +1,63 @@
+{
+ "id": "u_p_ge_where",
+ "code": "x = torch.randn(4096); y = torch.randn(4096); torch.where(x >= y, x - y, y - x)",
+ "rtol": 0,
+ "atol": 0,
+ "graph_inputs": [
+  "x",
+  "y"
+ ],
+ "graph_outputs": [
+  "where"
+ ],
+ "kernels": [
+  {
+   "node": "where",
+   "entry": "k_where_pointwise",
+   "arg_order": [
+    "x",
+    "y",
+    "where"
+   ],
+   "grid": [
+    4,
+    1,
+    1
+   ],
+   "block": [
+    256,
+    1,
+    1
+   ],
+   "smem_bytes": 0,
+   "zero_outputs": [],
+   "args": [
+    {
+     "name": "x",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 0
+    },
+    {
+     "name": "y",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "seed": 1
+    },
+    {
+     "name": "where",
+     "dtype": "f32",
+     "shape": [
+      4096
+     ],
+     "output": true
+    }
+   ],
+   "final": true
+  }
+ ]
+}

@@ -1,14 +1,44 @@
 > **This submission: `ptxc`, a Kernel IR -> PTX compiler.** The organizers' task description
 > follows this box.
 >
+> **In one minute**
+>
+> ```
+> kernel.ir.json -> kernel.py -> lower.py ----------------------------> cse.py -> vectorize.py -> PTX
+>   + meta.json     load the IR   one visit_ per IR statement            drop       merge loads
+>                                 loops.py       each loop's shape        repeated   into .v2/.v4
+>                                 index.py       addresses                rcp/div/
+>                                 facts.py       ranges and divisors      sqrt
+>                                 fmath.py       exp, tanh, sin, pow ...
+>                                 dtypes.py      f16, bf16, f64, ints
+>                                 tensorcore.py  mma.sync, ldmatrix
+> ```
+>
+> 1. `compile.py` reads one Kernel IR file and walks it once, top to bottom. Every IR statement
+>    kind has one `visit_` method that writes its PTX, and each IR line goes into the PTX as a
+>    comment above the instructions that implement it.
+> 2. It works out what it can before the kernel runs. Every integer's range and divisors give
+>    loop trip counts (the loop unrolls), alignment (four loads become one `.v4`) and tests that
+>    always hold (they are dropped).
+> 3. The same parts build all five categories: nothing is special-cased per problem.
+>
+> | | |
+> |---|---|
+> | correct | 15/15 open problems, 332/332 and 23/23 generated ones, on the GPU runner |
+> | fast kernels | 0.84x the time of Emmy's own CUDA over the f32 problems, 0.54x on attention; none of the 336 problems with a reference time is more than 3% slower |
+> | fast compiler | milliseconds: a median of 3 to 4 ms per open-problem kernel, 4 ms over all 382, about 2 s at most; a run of `compile.py` is mostly Python starting and importing emmy, 0.3 to 0.4 s |
+> | broad | the 5 categories; f32, f16, bf16, f64, i32, i64 and bool; gather, embedding, conv1d and the data-movement ops; `cp.async` copies; tensor cores (`mma.sync`, `ldmatrix`) |
+>
+> **Run it**
+>
 > ```bash
 > git clone https://github.com/huixu11/emmy-hackathon-2026 && cd emmy-hackathon-2026
 > pip install emmy-ml==0.3.11 numpy requests
 > python compile.py problems/r04_row_sum/k_sum_1_reduce.ir.json > r04.ptx   # IR in, PTX out
 >
-> python -m unittest discover -s tests      # offline: all 358 kernels compile, deterministically
+> python -m unittest discover -s tests      # offline: all 382 kernels compile, deterministically
 > python tools/run_problems.py               # the 15 open problems on the GPU runner: 15/15
-> python tools/run_problems.py --dir tests/problems   # 308 more, all categories and dtypes: 308/308
+> python tools/run_problems.py --dir tests/problems   # 332 more, all categories and dtypes: 332/332
 > python tools/run_packed.py                 # 23 bf16 / bool problems (packed, see below): 23/23
 > python tools/run_problems.py --iters 100   # median of 100 launches, as DESIGN.md reports
 > ```
@@ -33,7 +63,7 @@
 > * **Tensor cores** (`ptxc/tensorcore.py`): `mma.sync.aligned.m16n8k16` on f16 and bf16,
 >   `ldmatrix` (x4, x2.trans, x4 and x4.trans pairs, x2), tiles staged by `cp.async` into
 >   XOR-swizzled shared memory (B32, B64, B128, B128@k), fragments read from global memory with
->   row clamping and K zero-fill for odd shapes, fused epilogues (bias, relu) and split-K.
+>   row clamping and K zero-fill for odd shapes (as 32-bit words where aligned), fused epilogues (bias, relu) and split-K.
 >   **f16 attention on tensor cores**: q @ k.T and p @ v as mma, the online softmax in between
 >   on the C fragments (row max and sum by `shfl.sync.bfly` across the 4 lanes of a row, the
 >   causal mask as `setp` + `selp` on each element's row and column, `cvt.rn.f16x2.f32` to turn
@@ -46,25 +76,25 @@
 >   division by constants without a divide, `.maxntid`, next-key prefetch and one fma per update
 >   in attention, accumulators that always hold equal values computed once, scalar constants as
 >   immediates, `pow` specialized to its exponent, a common-subexpression pass for what
->   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), and f64 reads split between the f64
->   unit and the integer ALUs.
+>   ptxas will not merge (`rcp.rn`, `div.rn`, `sqrt.rn`), f64 reads split between the f64
+>   unit and the integer ALUs, and mma fragments read from global memory as 32-bit words.
 > * **Exact f32 math**: explicit `.rn` rounding, so pointwise results match numpy bit for bit; our
 >   own `exp`, `log`, `tanh`, `erf`, `sin`/`cos`, `pow` with measured accuracy (DESIGN.md).
 > * **Never wrong PTX silently**: anything unsupported stops with a one-line error and exit code 1.
 >
-> **Results.** 15/15 open problems, 308/308 in `tests/problems`, 23/23 in `tests/problems_packed`.
+> **Results.** 15/15 open problems, 332/332 in `tests/problems`, 23/23 in `tests/problems_packed`.
 > Kernels take 0.84x the time of Emmy's own CUDA (the `.ref.cu`, compiled with NVRTC) over the 147 f32
 > problems with a reference time, 0.54x on attention; 1.00x on the dtype problems and on the 9
-> tensor-core matmuls, 0.82x on the 9 f16 attention problems, 0.79x on the attention and reduction
-> problems in f16 and f64 (f64 attention 0.60x). None of the 312 problems with a reference time is
-> more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
+> tensor-core matmuls, 0.79x on the 9 f16 attention problems, 0.78x on the attention and reduction
+> problems in f16 and f64 (f64 attention 0.60x), 1.00x on the 24 problems of ops no other problem
+> uses. None of the 336 problems with a reference time is more than 3% slower. Every problem is listed in [TIMINGS.md](TIMINGS.md).
 >
 > **Tests and examples**
 >
 > | where | what |
 > |---|---|
 > | `tests/test_compiler.py` | offline unit tests (`python -m unittest discover -s tests`) |
-> | `tests/problems/` | 308 problems from `tests/expressions_variants.py` and `tests/expressions_cross.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), and the open problems in f16, f64 and i32 and the attention and reduction problems in f16 and f64 (`c_*`) |
+> | `tests/problems/` | 332 problems from `tests/expressions_variants.py`, `tests/expressions_cross.py` and `tests/expressions_ops.py` via `tools/generate.py`: new shapes, ops, dtypes (`d_*`), tensor-core matmuls (`t_m_*`), f16 attention (`t_s_*`), the open problems in f16, f64 and i32 and the attention and reduction problems in f16 and f64 (`c_*`), and the ops no other problem uses: gather, embedding, index_select, conv1d, cat, stack, roll, transpose, tril/triu, and the comparisons and bool combines (`u_*`) |
 > | `tests/problems_packed/` | bf16 and bool problems, the open problems in bf16 among them: the runner cannot allocate those buffers, so `tools/run_packed.py` passes them as int32 words |
 > | `examples/compiled/` | seven kernels' IR next to our PTX, with notes on what to look for |
 > | `tools/pow_sweep.py` | `pow` on 27 exponents and the special values, against C's `pow` |

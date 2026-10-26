@@ -1,11 +1,18 @@
 """ptxc: a Kernel IR -> PTX compiler for the Emmy hackathon.
 
-    kernel.py  load the IR, the buffers and the launch contract
-    lower.py   walk the IR statements and emit PTX for each
-    index.py   integer index arithmetic, predicates, addresses
-    fmath.py   f32 elementwise operations
-    scope.py   IR name scopes and the reuse cache
-    ptx.py     registers, labels, instruction text, module layout
+    kernel.py      load the IR, the buffers and the launch contract
+    lower.py       walk the IR statements and emit PTX for each
+    loops.py       the shape of each loop: unrolled, counted, prefetching; accumulator seeding
+    tensorcore.py  register fragments, ldmatrix, mma.sync
+    index.py       integer index arithmetic, predicates, addresses
+    facts.py       the known range and divisor of every index register
+    fmath.py       f32 elementwise operations
+    dtypes.py      how each dtype is held, read, written and converted
+    scope.py       IR name scopes and the reuse cache
+    irtree.py      walking the IR tree
+    cse.py         dropping recomputed rcp.rn / div.rn / sqrt.rn
+    vectorize.py   merging scalar loads into vector loads
+    ptx.py         registers, labels, instruction text, module layout
 """
 
 import os
